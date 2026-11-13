@@ -1,0 +1,20 @@
+{
+  "lang": "ru",
+  "start_key": "f6",
+  "stop_key": "f7",
+  "method": 1,
+  "safe": true,
+  "immediate": true,
+  "human": true,
+  "swing": true,
+  "mouse": false,
+  "space": true,
+  "walk": true,
+  "stand": false,
+  "any_win": false,
+  "min": 8,
+  "max": 10,
+  "turn_px": 2000,
+  "anim": true,
+  "no_method": false
+}

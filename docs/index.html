@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Pirate Token Farm v4.0 — Умный ассистент и Анти-АФК для Fortnite</title>
+  <meta name="description" content="Открытый Windows-ассистент для Fortnite: автоматический перезапуск матчей через OpenCV и живой человекоподобный Анти-АФК через DirectInput." />
+  <meta name="theme-color" content="#0E0F13" />
+  <link rel="icon" type="image/png" href="./assets/icon.png" />
+  <link rel="shortcut icon" href="./assets/icon.ico" />
+  <style>
+    :root {
+      --bg-top: #0E0F13;
+      --bg-bottom: #07080A;
+      --surface-header: rgba(14, 15, 19, 0.88);
+      --surface-card: #101216;
+      --surface-card-hover: #15181E;
+      --surface-elevated: #171A21;
+      --surface-elevated-hover: #1E222B;
+      --surface-sunk: #090A0D;
+      --border-subtle: #22252D;
+      --border-medium: #30343E;
+      --border-control: #5A6273;
+      --border-active: #80889A;
+      --text-primary: #F4F5F7;
+      --text-secondary: #A4AAB8;
+      --text-muted: #828897;
+      --cta-bg: #F4F5F7;
+      --cta-bg-hover: #FFFFFF;
+      --cta-fg: #09090B;
+      --status-ok: #34D399;
+      --status-run: #60A5FA;
+      --focus-ring: #F4F5F7;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-xl: 20px;
+      --header-h: 68px;
+      --shadow-card: 0 18px 50px rgba(0, 0, 0, 0.55), 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+      --shadow-pill: 0 2px 10px rgba(0, 0, 0, 0.35);
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: calc(var(--header-h) + 20px);
+      background-color: var(--bg-bottom);
+      color: var(--text-primary);
+      font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      background: linear-gradient(180deg, var(--bg-top) 0%, #0A0B0F 48%, var(--bg-bottom) 100%);
+      color: var(--text-primary);
+      font-size: 16px;
+      line-height: 1.55;
+      overflow-x: hidden;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: 2px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1120px;
+      margin-inline: auto;
+      padding-inline: 24px;
+    }
+
+    /* Header */
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      height: var(--header-h);
+      background: var(--surface-header);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .header-inner {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+
+    .brand img {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      flex-shrink: 0;
+      outline: 1px solid oklch(1 0 0 / 0.1);
+      outline-offset: -1px;
+    }
+
+    .ver-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-secondary);
+      background: var(--surface-elevated);
+      border: 1px solid var(--border-medium);
+      white-space: nowrap;
+    }
+
+    .header-nav {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .nav-link {
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      transition: background-color 140ms ease-out, color 140ms ease-out;
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .nav-link:hover {
+      color: var(--text-primary);
+      background: var(--surface-elevated);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .lang-switch {
+      display: inline-flex;
+      padding: 3px;
+      border-radius: 10px;
+      background: var(--surface-sunk);
+      border: 1px solid var(--border-medium);
+    }
+
+    .lang-btn {
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      padding: 6px 11px;
+      min-height: 36px;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
+    }
+
+    .lang-btn[aria-pressed="true"] {
+      background: var(--surface-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border-active);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      min-height: 44px;
+      padding: 10px 18px;
+      border-radius: var(--radius-md);
+      font-size: 14px;
+      font-weight: 600;
+      border: 1px solid transparent;
+      transition: background-color 150ms ease-out, border-color 150ms ease-out, transform 150ms ease-out;
+      white-space: nowrap;
+    }
+
+    .btn:active {
+      transform: scale(0.96);
+    }
+
+    .btn-primary {
+      background: var(--cta-bg);
+      color: var(--cta-fg);
+      border-color: var(--cta-bg);
+    }
+
+    .btn-primary:hover {
+      background: var(--cta-bg-hover);
+    }
+
+    .btn-secondary {
+      background: var(--surface-elevated);
+      color: var(--text-primary);
+      border-color: var(--border-control);
+    }
+
+    .btn-secondary:hover {
+      background: var(--surface-elevated-hover);
+      border-color: var(--border-active);
+    }
+
+    .btn-compact {
+      min-height: 40px;
+      padding: 8px 14px;
+      font-size: 13px;
+      border-radius: 10px;
+    }
+
+    /* Hero */
+    .hero {
+      padding-block: 56px 48px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.04fr) minmax(0, 0.96fr);
+      gap: 40px;
+      align-items: center;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--surface-card);
+      border: 1px solid var(--border-medium);
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 18px;
+      box-shadow: var(--shadow-pill);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--status-ok);
+      flex-shrink: 0;
+    }
+
+    h1 {
+      margin: 0 0 16px;
+      font-size: clamp(2rem, 3.6vw, 2.85rem);
+      font-weight: 700;
+      line-height: 1.15;
+      letter-spacing: -0.025em;
+      text-wrap: balance;
+    }
+
+    .hero-desc {
+      margin: 0 0 28px;
+      max-width: 62ch;
+      font-size: 17px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+    }
+
+    .hero-cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .release-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+      margin-bottom: 28px;
+    }
+
+    .release-meta a {
+      color: var(--text-secondary);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .release-meta a:hover {
+      color: var(--text-primary);
+    }
+
+    .trust-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .trust-item {
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+    }
+
+    .trust-val {
+      font-size: 16px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+    }
+
+    .trust-lbl {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.35;
+    }
+
+    /* Interactive Screenshot Showcase Card */
+    .preview-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border-medium);
+      border-radius: var(--radius-xl);
+      padding: 14px;
+      box-shadow: var(--shadow-card);
+    }
+
+    .preview-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .preview-tab {
+      border: 1px solid var(--border-subtle);
+      background: var(--surface-elevated);
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+      padding: 7px 12px;
+      min-height: 36px;
+      font-size: 13px;
+      font-weight: 500;
+      transition: background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
+    }
+
+    .preview-tab[aria-selected="true"] {
+      background: var(--surface-card-hover);
+      color: var(--text-primary);
+      border-color: var(--border-active);
+      font-weight: 600;
+    }
+
+    .preview-stage {
+      background: var(--surface-sunk);
+      border: 1px solid var(--border-subtle);
+      border-radius: calc(var(--radius-xl) - 8px);
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .preview-stage img {
+      display: block;
+      width: 100%;
+      max-width: 440px;
+      height: auto;
+      border-radius: 10px;
+      outline: 1px solid oklch(1 0 0 / 0.1);
+      outline-offset: -1px;
+    }
+
+    .preview-caption {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    /* Sections */
+    .section {
+      padding-block: 44px;
+    }
+
+    .section-head {
+      margin-bottom: 24px;
+      max-width: 66ch;
+    }
+
+    .section-kicker {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    h2 {
+      margin: 0 0 8px;
+      font-size: clamp(1.5rem, 2.4vw, 1.95rem);
+      font-weight: 700;
+      line-height: 1.25;
+      letter-spacing: -0.02em;
+      text-wrap: balance;
+    }
+
+    .section-sub {
+      margin: 0;
+      font-size: 15px;
+      color: var(--text-secondary);
+      line-height: 1.55;
+    }
+
+    .cards-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      gap: 16px;
+    }
+
+    .cards-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--surface-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      transition: border-color 150ms ease-out, background-color 150ms ease-out;
+    }
+
+    .card:hover {
+      background: var(--surface-card-hover);
+      border-color: var(--border-medium);
+    }
+
+    .card-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border-medium);
+      color: var(--text-secondary);
+      margin-bottom: 12px;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      font-weight: 600;
+      line-height: 1.3;
+      color: var(--text-primary);
+    }
+
+    .card p {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--text-secondary);
+      max-width: 65ch;
+    }
+
+    /* Setup & Code blocks */
+    .setup-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+      gap: 16px;
+    }
+
+    .steps-list {
+      margin: 14px 0 0;
+      padding-left: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .steps-list strong {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .code-box {
+      margin-top: 14px;
+      background: var(--surface-sunk);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text-primary);
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .safety-banner {
+      background: var(--surface-card);
+      border: 1px solid var(--border-medium);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+
+    .check-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+
+    .check-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .check-mark {
+      color: var(--status-ok);
+      font-weight: 700;
+      flex-shrink: 0;
+      line-height: 1.4;
+    }
+
+    /* Footer */
+    .site-footer {
+      border-top: 1px solid var(--border-subtle);
+      padding-block: 28px 36px;
+      margin-top: 24px;
+    }
+
+    .footer-inner {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .footer-links a {
+      color: var(--text-secondary);
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .footer-links a:hover {
+      color: var(--text-primary);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    @media (max-width: 920px) {
+      .hero-grid,
+      .safety-banner {
+        grid-template-columns: 1fr;
+      }
+      .header-nav {
+        display: none;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .container {
+        padding-inline: 16px;
+      }
+      .hero {
+        padding-block: 36px 28px;
+      }
+      .trust-strip {
+        grid-template-columns: 1fr;
+      }
+      .hero-cta-row .btn {
+        width: 100%;
+      }
+    }
+
+    @media (pointer: coarse) {
+      .lang-btn,
+      .preview-tab {
+        min-height: 44px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+      .btn,
+      .card,
+      .nav-link,
+      .lang-btn,
+      .preview-tab {
+        transition: none;
+      }
+      .btn:active {
+        transform: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="#top" class="brand">
+        <img src="./assets/icon.png" alt="Логотип Pirate Token Farm" width="34" height="34" />
+        <span>Pirate Token Farm</span>
+        <span class="ver-badge" id="hdrVersion">v4.0.0</span>
+      </a>
+
+      <nav class="header-nav" aria-label="Навигация по разделам">
+        <a class="nav-link" href="#methods" data-i18n="nav_methods">Режимы</a>
+        <a class="nav-link" href="#antiafk" data-i18n="nav_afk">Анти-АФК</a>
+        <a class="nav-link" href="#safety" data-i18n="nav_safety">Безопасность</a>
+        <a class="nav-link" href="#install" data-i18n="nav_install">Установка</a>
+      </nav>
+
+      <div class="header-actions">
+        <div class="lang-switch" role="group" aria-label="Выбор языка страницы">
+          <button type="button" class="lang-btn" data-lang="ru" aria-pressed="true">RU</button>
+          <button type="button" class="lang-btn" data-lang="en" aria-pressed="false">EN</button>
+        </div>
+        <a class="btn btn-secondary btn-compact" href="https://github.com/kiingofhate/pirate-token-farm" target="_blank" rel="noopener noreferrer" data-i18n="hdr_github">GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <div class="status-pill">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span data-i18n="hero_pill">Открытый код · DirectInput · Windows 10 / 11</span>
+          </div>
+
+          <h1 data-i18n="hero_title">Автофарм матчей и живой Анти-АФК для Fortnite</h1>
+          <p class="hero-desc" data-i18n="hero_desc">
+            Лёгкий ассистент в тёмной обсидиановой оболочке с нулевой нагрузкой на процессор в покое. Перезапускает матчи по OpenCV-шаблонам и имитирует действия реального игрока через аппаратные скан-коды Windows.
+          </p>
+
+          <div class="hero-cta-row">
+            <a id="downloadExeBtn" class="btn btn-primary" href="https://github.com/kiingofhate/pirate-token-farm/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="cta_download">
+              Скачать для Windows (.exe)
+            </a>
+            <a class="btn btn-secondary" href="https://github.com/kiingofhate/pirate-token-farm" target="_blank" rel="noopener noreferrer" data-i18n="cta_source">
+              Открытый код на GitHub
+            </a>
+          </div>
+
+          <div class="release-meta">
+            <span id="releaseTagText" data-i18n="release_loading">Релиз: v4.0.0 · Автосборка GitHub Actions</span>
+            <span>·</span>
+            <a id="downloadZipLink" href="https://github.com/kiingofhate/pirate-token-farm/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="cta_zip">Portable ZIP</a>
+            <span>·</span>
+            <a id="checksumsLink" href="https://github.com/kiingofhate/pirate-token-farm/releases/latest" target="_blank" rel="noopener noreferrer">SHA256SUMS.txt</a>
+          </div>
+
+          <div class="trust-strip">
+            <div class="trust-item">
+              <div class="trust-val">0% CPU</div>
+              <div class="trust-lbl" data-i18n="stat_cpu">В покое и без анимаций, 30 автотестов</div>
+            </div>
+            <div class="trust-item">
+              <div class="trust-val">DirectInput</div>
+              <div class="trust-lbl" data-i18n="stat_input">Системный SendInput без правки игры</div>
+            </div>
+            <div class="trust-item">
+              <div class="trust-val">F6 / F7</div>
+              <div class="trust-lbl" data-i18n="stat_hotkeys">Глобальные бинды независимые от раскладки</div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="preview-card" aria-label="Предпросмотр интерфейса приложения">
+          <div class="preview-tabs" role="tablist" aria-label="Экраны интерфейса">
+            <button type="button" class="preview-tab" role="tab" aria-selected="true" data-slide="ru" data-i18n="tab_ru">Главный (RU)</button>
+            <button type="button" class="preview-tab" role="tab" aria-selected="false" data-slide="running" data-i18n="tab_run">В работе</button>
+            <button type="button" class="preview-tab" role="tab" aria-selected="false" data-slide="settings" data-i18n="tab_set">Настройки</button>
+            <button type="button" class="preview-tab" role="tab" aria-selected="false" data-slide="en">English UI</button>
+          </div>
+          <div class="preview-stage">
+            <img id="previewImg" src="./assets/preview-ru.png" alt="Главный экран Pirate Token Farm v4.0" width="640" height="804" />
+          </div>
+          <div class="preview-caption" id="previewCaption" data-i18n="cap_ru">
+            Чистый обсидиановый интерфейс с раздельным управлением методами и Анти-АФК
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section" id="methods">
+      <div class="container">
+        <div class="section-head">
+          <div class="section-kicker" data-i18n="sec_methods_k">ИГРОВОЙ ЦИКЛ</div>
+          <h2 data-i18n="sec_methods_t">Три сценария фарма под любой режим Fortnite</h2>
+          <p class="section-sub" data-i18n="sec_methods_s">
+            Масштабируемый OpenCV-поиск с маской фона стабильно находит кнопки при разном разрешении мониторов и оформлении сезонов.
+          </p>
+        </div>
+
+        <div class="cards-3">
+          <article class="card">
+            <span class="card-badge" data-i18n="m1_badge">Метод 1</span>
+            <h3 data-i18n="m1_t">Повторная игра</h3>
+            <p data-i18n="m1_d">Сканирует экран окончания матча и сам нажимает «Играть снова», а при включённом резерве кликает «Играть» в лобби.</p>
+          </article>
+          <article class="card">
+            <span class="card-badge" data-i18n="m2_badge">Метод 2</span>
+            <h3 data-i18n="m2_t">Полный цикл через лобби</h3>
+            <p data-i18n="m2_d">Запускает матч, ждёт случайный таймер (настройка минут от/до), открывает меню, выходит в лобби и стартует заново.</p>
+          </article>
+          <article class="card">
+            <span class="card-badge" data-i18n="m3_badge">Метод 3</span>
+            <h3 data-i18n="m3_t">Только Анти-АФК</h3>
+            <p data-i18n="m3_d">Полностью отключает захват экрана и OpenCV — работает только генератор движений, идеален для долгих творческих карт и LEGO.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="antiafk">
+      <div class="container">
+        <div class="section-head">
+          <div class="section-kicker" data-i18n="sec_afk_k">РЕЖИМ «СЛАБЫЙ ИГРОК»</div>
+          <h2 data-i18n="sec_afk_t">Живое разнообразие действий против АФК-детекции</h2>
+          <p class="section-sub" data-i18n="sec_afk_s">
+            Вместо однотипного зажатия W и таймера бот смешивает стрейфы, подкаты, увороты и микро-коррекции камеры с аритмичными интервалами.
+          </p>
+        </div>
+
+        <div class="cards-3">
+          <article class="card">
+            <h3 data-i18n="a1_t">Подкаты и прыжок из подката</h3>
+            <p data-i18n="a1_d">Разгон на спринте W + Shift, подкат Ctrl со смещением камеры и выход через Space со стрейфом или полный докат.</p>
+          </article>
+          <article class="card">
+            <h3 data-i18n="a2_t">Увороты стрейфами A–D</h3>
+            <p data-i18n="a2_d">Серии из 3–5 быстрых смен направления влево и вправо с лёгкой противофазной доводкой прицела.</p>
+          </article>
+          <article class="card">
+            <h3 data-i18n="a3_t">Приседания с осмотром</h3>
+            <p data-i18n="a3_d">Короткие приседания, двойные пики и присед-стрейфы с точным сохранением баланса тоггла Ctrl.</p>
+          </article>
+          <article class="card">
+            <h3 data-i18n="a4_t">Удары киркой и прыжок-удар</h3>
+            <p data-i18n="a4_d">Рандомные взмахи, серии по 2–3 удара с шагом вбок, удержание ЛКМ или комбо прыжок + флик + удар.</p>
+          </article>
+          <article class="card">
+            <h3 data-i18n="a5_t">Короткий осмотр ПКМ</h3>
+            <p data-i18n="a5_d">Кратковременное прицеливание правой кнопкой с плавным ведением и защитой от срабатывания во время фарма ЛКМ.</p>
+          </article>
+          <article class="card">
+            <h3 data-i18n="a6_t">Живая камера и аритмия</h3>
+            <p data-i18n="a6_d">Косинусные повороты с ограничением вертикального угла, оглядки назад, микро-дрейф в паузах и рваный ритм пауз.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="safety">
+      <div class="container">
+        <div class="safety-banner">
+          <div>
+            <div class="section-kicker" data-i18n="sec_safe_k">ПРОЗРАЧНАЯ АРХИТЕКТУРА</div>
+            <h2 data-i18n="sec_safe_t">Открытый код и ноль вмешательства в клиент игры</h2>
+            <p class="section-sub" data-i18n="sec_safe_s">
+              Весь исходный код открыт под лицензией MIT, а готовые .exe собираются публично в GitHub Actions с проверкой хеш-сумм SHA-256.
+            </p>
+          </div>
+          <ul class="check-list">
+            <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_1">Не читает и не меняет память процесса, не внедряет DLL и не трогает файлы Fortnite.</span></li>
+            <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_2">Работает только когда окно игры в фокусе — автопауза при любом Alt+Tab.</span></li>
+            <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_3">Сброс всех клавиш и кнопок мыши (LMB/RMB) при остановке, ошибке или клике меню.</span></li>
+            <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_4">Не использует клавиши Esc, Tab, I, M, B, E во время Анти-АФК — меню не откроются случайно.</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="install">
+      <div class="container">
+        <div class="section-head">
+          <div class="section-kicker" data-i18n="sec_inst_k">БЫСТРЫЙ СТАРТ</div>
+          <h2 data-i18n="sec_inst_t">Два способа запуска</h2>
+        </div>
+
+        <div class="setup-grid">
+          <article class="card">
+            <span class="card-badge" data-i18n="in1_badge">Рекомендуется</span>
+            <h3 data-i18n="in1_t">Готовый Windows EXE</h3>
+            <p data-i18n="in1_d">Автономный исполняемый файл без установки Python и сторонних библиотек.</p>
+            <ol class="steps-list">
+              <li data-i18n="in1_s1">Скачайте релиз из раздела GitHub Releases по кнопке выше.</li>
+              <li data-i18n="in1_s2">Запустите от администратора — UAC нужен Windows для отправки скан-кодов поверх окна игры.</li>
+              <li data-i18n="in1_s3">Настройте поворот 180° под чувствительность мыши и нажмите F6 в игре (F7 для стопа).</li>
+            </ol>
+          </article>
+
+          <article class="card">
+            <span class="card-badge" data-i18n="in2_badge">Для разработчиков</span>
+            <h3 data-i18n="in2_t">Запуск из исходного кода</h3>
+            <p data-i18n="in2_d">Требуется Python 3.10+ на Windows 10 или Windows 11.</p>
+            <pre class="code-box">git clone https://github.com/kiingofhate/pirate-token-farm.git
+cd pirate-token-farm
+pip install -r requirements.txt
+python tests\test_pirate_farm.py</pre>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span>Pirate Token Farm v4.0 · MIT License</span>
+      <div class="footer-links">
+        <a href="https://github.com/kiingofhate/pirate-token-farm" target="_blank" rel="noopener noreferrer" data-i18n="ft_repo">Репозиторий</a>
+        <a href="https://github.com/kiingofhate/pirate-token-farm/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="ft_rel">Релизы и .EXE</a>
+        <a href="https://github.com/kiingofhate/pirate-token-farm/actions" target="_blank" rel="noopener noreferrer" data-i18n="ft_ci">Сборки Actions</a>
+        <a href="https://github.com/kiingofhate/pirate-token-farm/issues" target="_blank" rel="noopener noreferrer" data-i18n="ft_iss">Сообщить о баге</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const I18N = {
+      ru: {
+        nav_methods: "Режимы",
+        nav_afk: "Анти-АФК",
+        nav_safety: "Безопасность",
+        nav_install: "Установка",
+        hdr_github: "GitHub",
+        hero_pill: "Открытый код · DirectInput · Windows 10 / 11",
+        hero_title: "Автофарм матчей и живой Анти-АФК для Fortnite",
+        hero_desc: "Лёгкий ассистент в тёмной обсидиановой оболочке с нулевой нагрузкой на процессор в покое. Перезапускает матчи по OpenCV-шаблонам и имитирует действия реального игрока через аппаратные скан-коды Windows.",
+        cta_download: "Скачать для Windows (.exe)",
+        cta_source: "Открытый код на GitHub",
+        release_loading: "Релиз: v4.0.0 · Автосборка GitHub Actions",
+        cta_zip: "Portable ZIP",
+        stat_cpu: "В покое и без анимаций, 30 автотестов",
+        stat_input: "Системный SendInput без правки игры",
+        stat_hotkeys: "Глобальные бинды независимые от раскладки",
+        tab_ru: "Главный (RU)",
+        tab_run: "В работе",
+        tab_set: "Настройки",
+        cap_ru: "Чистый обсидиановый интерфейс с раздельным управлением методами и Анти-АФК",
+        cap_run: "Раскрытые параметры цикла, живой журнал событий и активный статус «Работает»",
+        cap_set: "Экран настроек: анимации, калибровка поворота на 180° и переназначение клавиш",
+        cap_en: "Полная английская локализация без смещения отступов и обрезания строк",
+        sec_methods_k: "ИГРОВОЙ ЦИКЛ",
+        sec_methods_t: "Три сценария фарма под любой режим Fortnite",
+        sec_methods_s: "Масштабируемый OpenCV-поиск с маской фона стабильно находит кнопки при разном разрешении мониторов и оформлении сезонов.",
+        m1_badge: "Метод 1",
+        m1_t: "Повторная игра",
+        m1_d: "Сканирует экран окончания матча и сам нажимает «Играть снова», а при включённом резерве кликает «Играть» в лобби.",
+        m2_badge: "Метод 2",
+        m2_t: "Полный цикл через лобби",
+        m2_d: "Запускает матч, ждёт случайный таймер (настройка минут от/до), открывает меню, выходит в лобби и стартует заново.",
+        m3_badge: "Метод 3",
+        m3_t: "Только Анти-АФК",
+        m3_d: "Полностью отключает захват экрана и OpenCV — работает только генератор движений, идеален для долгих творческих карт и LEGO.",
+        sec_afk_k: "РЕЖИМ «СЛАБЫЙ ИГРОК»",
+        sec_afk_t: "Живое разнообразие действий против АФК-детекции",
+        sec_afk_s: "Вместо однотипного зажатия W и таймера бот смешивает стрейфы, подкаты, увороты и микро-коррекции камеры с аритмичными интервалами.",
+        a1_t: "Подкаты и прыжок из подката",
+        a1_d: "Разгон на спринте W + Shift, подкат Ctrl со смещением камеры и выход через Space со стрейфом или полный докат.",
+        a2_t: "Увороты стрейфами A–D",
+        a2_d: "Серии из 3–5 быстрых смен направления влево и вправо с лёгкой противофазной доводкой прицела.",
+        a3_t: "Приседания с осмотром",
+        a3_d: "Короткие приседания, двойные пики и присед-стрейфы с точным сохранением баланса тоггла Ctrl.",
+        a4_t: "Удары киркой и прыжок-удар",
+        a4_d: "Рандомные взмахи, серии по 2–3 удара с шагом вбок, удержание ЛКМ или комбо прыжок + флик + удар.",
+        a5_t: "Короткий осмотр ПКМ",
+        a5_d: "Кратковременное прицеливание правой кнопкой с плавным ведением и защитой от срабатывания во время фарма ЛКМ.",
+        a6_t: "Живая камера и аритмия",
+        a6_d: "Косинусные повороты с ограничением вертикального угла, оглядки назад, микро-дрейф в паузах и рваный ритм пауз.",
+        sec_safe_k: "ПРОЗРАЧНАЯ АРХИТЕКТУРА",
+        sec_safe_t: "Открытый код и ноль вмешательства в клиент игры",
+        sec_safe_s: "Весь исходный код открыт под лицензией MIT, а готовые .exe собираются публично в GitHub Actions с проверкой хеш-сумм SHA-256.",
+        sf_1: "Не читает и не меняет память процесса, не внедряет DLL и не трогает файлы Fortnite.",
+        sf_2: "Работает только когда окно игры в фокусе — автопауза при любом Alt+Tab.",
+        sf_3: "Сброс всех клавиш и кнопок мыши (LMB/RMB) при остановке, ошибке или клике меню.",
+        sf_4: "Не использует клавиши Esc, Tab, I, M, B, E во время Анти-АФК — меню не откроются случайно.",
+        sec_inst_k: "БЫСТРЫЙ СТАРТ",
+        sec_inst_t: "Два способа запуска",
+        in1_badge: "Рекомендуется",
+        in1_t: "Готовый Windows EXE",
+        in1_d: "Автономный исполняемый файл без установки Python и сторонних библиотек.",
+        in1_s1: "Скачайте релиз из раздела GitHub Releases по кнопке выше.",
+        in1_s2: "Запустите от администратора — UAC нужен Windows для отправки скан-кодов поверх окна игры.",
+        in1_s3: "Настройте поворот 180° под чувствительность мыши и нажмите F6 в игре (F7 для стопа).",
+        in2_badge: "Для разработчиков",
+        in2_t: "Запуск из исходного кода",
+        in2_d: "Требуется Python 3.10+ на Windows 10 или Windows 11.",
+        ft_repo: "Репозиторий",
+        ft_rel: "Релизы и .EXE",
+        ft_ci: "Сборки Actions",
+        ft_iss: "Сообщить о баге"
+      },
+      en: {
+        nav_methods: "Methods",
+        nav_afk: "Anti-AFK",
+        nav_safety: "Safety",
+        nav_install: "Setup",
+        hdr_github: "GitHub",
+        hero_pill: "Open Source · DirectInput · Windows 10 / 11",
+        hero_title: "Smart Match Loop & Human-Like Anti-AFK for Fortnite",
+        hero_desc: "Lightweight Obsidian desktop assistant with zero idle CPU usage. Re-queues matches via halo-masked OpenCV detection and emulates casual player movement using Windows hardware DirectInput.",
+        cta_download: "Download for Windows (.exe)",
+        cta_source: "View Source on GitHub",
+        release_loading: "Release: v4.0.0 · Built on GitHub Actions",
+        cta_zip: "Portable ZIP",
+        stat_cpu: "Zero idle usage · 30 automated unit tests",
+        stat_input: "System SendInput without modifying game files",
+        stat_hotkeys: "Layout-independent global VK hotkeys",
+        tab_ru: "Main (RU)",
+        tab_run: "Running UI",
+        tab_set: "Settings",
+        cap_ru: "Obsidian dark layered UI with independent match loop and Anti-AFK controls",
+        cap_run: "Expanded method parameters, live telemetry log, and active Running state",
+        cap_set: "Settings view: motion toggle, 180° turn calibration, and layout-safe hotkeys",
+        cap_en: "Complete English localization without clipped labels or shifted spacing",
+        sec_methods_k: "MATCH AUTOMATION",
+        sec_methods_t: "Three farming workflows for any Fortnite mode",
+        sec_methods_s: "Scale-invariant halo-masked OpenCV template matching reliably locates queue controls across monitor DPIs and seasonal themes.",
+        m1_badge: "Method 1",
+        m1_t: "Play Again Loop",
+        m1_d: "Detects end-of-match screens and clicks Play Again automatically, with optional Lobby Play fallback.",
+        m2_badge: "Method 2",
+        m2_t: "Full Lobby Cycle",
+        m2_d: "Starts a match, waits a randomized minute range, opens the menu, returns to lobby, and requeues.",
+        m3_badge: "Method 3",
+        m3_t: "Anti-AFK Only",
+        m3_d: "Bypasses screen capture and OpenCV completely for zero vision overhead on long Creative or LEGO maps.",
+        sec_afk_k: "CASUAL PLAYER ENGINE",
+        sec_afk_t: "Varied human behaviors to defeat AFK pattern checks",
+        sec_afk_s: "Instead of rigid linear loops, the engine mixes strafes, sprint-slides, wiggles, and smooth camera sweeps on non-periodic rhythm intervals.",
+        a1_t: "Sprint-Slides & Slide-Hops",
+        a1_d: "Sprints (W + Shift), slides (Ctrl) with curved camera sweeps, and exits via Space slide-hop or full slide settle.",
+        a2_t: "A–D Dodge Wiggles",
+        a2_d: "Short 3–5 step alternating strafe bursts left and right with counter-aim mouse micro-tracking.",
+        a3_t: "Crouch-Peeks & Strafes",
+        a3_d: "Brief crouch peeks and stealth strafes tracking even Ctrl toggle counts cleanly in finally blocks.",
+        a4_t: "Pickaxe Swings & Jump-Chop",
+        a4_d: "Random chops, 2–3 swing combos with sidesteps, LMB hold, or jump-flick-swing maneuvers.",
+        a5_t: "Brief RMB Peek",
+        a5_d: "Short harmless right-click ADS glances paired with fine tracking, muted automatically when LMB harvest hold is active.",
+        a6_t: "Eased Camera & Rhythm Bursts",
+        a6_d: "Cosine mouse curves with vertical pitch clamping, shoulder checks, idle aim drift, and mixed burst/relax timing.",
+        sec_safe_k: "TRANSPARENT ARCHITECTURE",
+        sec_safe_t: "Open-source code with zero game file or memory tampering",
+        sec_safe_s: "Full MIT-licensed source code and public cloud builds compiled on GitHub Actions with verifiable SHA-256 checksums.",
+        sf_1: "Never reads/writes process memory, never injects DLLs, and leaves all game files untouched.",
+        sf_2: "Automatically pauses on Alt+Tab whenever Fortnite is minimized or loses foreground focus.",
+        sf_3: "Unconditionally releases all held keys, LMB, and RMB on Stop (F7), focus loss, or button clicks.",
+        sf_4: "Avoids Esc, Tab, I, M, B, E during Anti-AFK so menus or emotes never open accidentally.",
+        sec_inst_k: "QUICK START",
+        sec_inst_t: "Two ways to run",
+        in1_badge: "Recommended",
+        in1_t: "Standalone Windows EXE",
+        in1_d: "Single-file executable built via PyInstaller — no Python installation required.",
+        in1_s1: "Download the latest release binary from GitHub Releases above.",
+        in1_s2: "Run as Administrator so Windows allows DirectInput scan codes over Fortnite.",
+        in1_s3: "Adjust 180° camera turn pixels to match your sensitivity and press F6 in-game (F7 to stop).",
+        in2_badge: "From Source",
+        in2_t: "Run with Python 3.10+",
+        in2_d: "Works on Windows 10 and Windows 11 with standard pip dependencies.",
+        ft_repo: "Repository",
+        ft_rel: "Releases & .EXE",
+        ft_ci: "Actions Builds",
+        ft_iss: "Report Issue"
+      }
+    };
+
+    const SLIDES = {
+      ru: { src: "./assets/preview-ru.png", capKey: "cap_ru", alt: "Главный экран Pirate Token Farm v4.0 (RU)", w: 640, h: 804 },
+      running: { src: "./assets/preview-running.png", capKey: "cap_run", alt: "Раскрытые параметры и статус Работает", w: 640, h: 944 },
+      settings: { src: "./assets/preview-settings.png", capKey: "cap_set", alt: "Экран настроек Pirate Token Farm", w: 640, h: 582 },
+      en: { src: "./assets/preview-en.png", capKey: "cap_en", alt: "Pirate Token Farm English interface", w: 640, h: 804 }
+    };
+
+    let currentLang = "ru";
+    let currentSlide = "ru";
+    let latestReleaseTag = "v4.0.0";
+
+    function applyLang(lang) {
+      currentLang = I18N[lang] ? lang : "ru";
+      document.documentElement.lang = currentLang;
+      document.querySelectorAll(".lang-btn").forEach((b) => {
+        b.setAttribute("aria-pressed", b.dataset.lang === currentLang ? "true" : "false");
+      });
+      const dict = I18N[currentLang];
+      document.querySelectorAll("[data-i18n]").forEach((el) => {
+        const key = el.getAttribute("data-i18n");
+        if (dict[key]) {
+          if (key === "release_loading") {
+            el.textContent = currentLang === "ru"
+              ? `Релиз: ${latestReleaseTag} · Автосборка GitHub Actions`
+              : `Release: ${latestReleaseTag} · Built on GitHub Actions`;
+          } else {
+            el.textContent = dict[key];
+          }
+        }
+      });
+      applySlide(currentSlide);
+    }
+
+    function applySlide(key) {
+      currentSlide = SLIDES[key] ? key : "ru";
+      const s = SLIDES[currentSlide];
+      const img = document.getElementById("previewImg");
+      const cap = document.getElementById("previewCaption");
+      img.src = s.src;
+      img.alt = s.alt;
+      img.width = s.w;
+      img.height = s.h;
+      cap.textContent = I18N[currentLang][s.capKey];
+      document.querySelectorAll(".preview-tab").forEach((t) => {
+        t.setAttribute("aria-selected", t.dataset.slide === currentSlide ? "true" : "false");
+      });
+    }
+
+    document.querySelectorAll(".lang-btn").forEach((btn) => {
+      btn.addEventListener("click", () => applyLang(btn.dataset.lang));
+    });
+
+    document.querySelectorAll(".preview-tab").forEach((tab, idx, allTabs) => {
+      tab.addEventListener("click", () => applySlide(tab.dataset.slide));
+      tab.addEventListener("keydown", (ev) => {
+        if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
+          ev.preventDefault();
+          const dir = ev.key === "ArrowRight" ? 1 : -1;
+          const next = allTabs[(idx + dir + allTabs.length) % allTabs.length];
+          applySlide(next.dataset.slide);
+          next.focus();
+        }
+      });
+    });
+
+    // Hydrate direct .exe & .zip links dynamically from latest published GitHub Release
+    fetch("https://api.github.com/repos/kiingofhate/pirate-token-farm/releases/latest")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((rel) => {
+        if (!rel || !rel.tag_name) return;
+        latestReleaseTag = rel.tag_name;
+        const badge = document.getElementById("hdrVersion");
+        if (badge) badge.textContent = rel.tag_name;
+        const assets = Array.isArray(rel.assets) ? rel.assets : [];
+        const exeAsset = assets.find((a) => a.name && a.name.endsWith(".exe"));
+        const zipAsset = assets.find((a) => a.name && a.name.endsWith(".zip"));
+        const shaAsset = assets.find((a) => a.name === "SHA256SUMS.txt");
+        if (exeAsset) document.getElementById("downloadExeBtn").href = exeAsset.browser_download_url;
+        if (zipAsset) document.getElementById("downloadZipLink").href = zipAsset.browser_download_url;
+        if (shaAsset) document.getElementById("checksumsLink").href = shaAsset.browser_download_url;
+        applyLang(currentLang);
+      })
+      .catch(() => {});
+  </script>
+</body>
+</html>

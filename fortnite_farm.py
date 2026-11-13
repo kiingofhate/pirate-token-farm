@@ -1,0 +1,2878 @@
+# -*- coding: utf-8 -*-
+"""
+Pirate Token Farm v4.0 · Fortnite Smart Game & Anti-AFK Assistant
+Pure obsidian layered Canvas renderer (0% idle CPU, zero GDI leaks) + hardened DirectInput engine.
+"""
+
+from __future__ import annotations
+
+import ctypes
+from ctypes import wintypes
+import json
+import math
+import os
+from pathlib import Path
+import queue
+import random
+import sys
+import threading
+import time
+from collections import deque
+import tkinter as tk
+from tkinter import messagebox
+
+import cv2
+import mss
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont, ImageTk
+
+try:
+    import pyautogui
+    pyautogui.FAILSAFE = False
+except Exception:
+    pyautogui = None
+
+try:
+    import keyboard
+except Exception:
+    keyboard = None
+
+# ---------------------------------------------------------------------------
+# DPI & Windows API Signatures (64-bit safe)
+# ---------------------------------------------------------------------------
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+user32 = ctypes.windll.user32
+gdi32 = ctypes.windll.gdi32
+kernel32 = ctypes.windll.kernel32
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+ULONG_PTR = ctypes.c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_uint32
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+
+class INPUT_UNION(ctypes.Union):
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [
+        ("type", wintypes.DWORD),
+        ("ii", INPUT_UNION),
+    ]
+
+
+# Explicit Win32 ctypes prototypes (prevents 64-bit HWND truncation)
+try:
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.restype = ctypes.c_int
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HMONITOR
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    user32.SetCursorPos.restype = wintypes.BOOL
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
+    user32.MapVirtualKeyW.restype = wintypes.UINT
+    user32.VkKeyScanW.argtypes = [wintypes.WCHAR]
+    user32.VkKeyScanW.restype = ctypes.c_short
+except Exception:
+    pass
+
+INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
+
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
+
+KEYEVENTF_EXTENDEDKEY = 0x0001
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_SCANCODE = 0x0008
+MONITOR_DEFAULTTONEAREST = 2
+
+# Hardware DirectInput scan codes & virtual keys
+KEY_MAP = {
+    "w": (0x57, 0x11),
+    "a": (0x41, 0x1E),
+    "s": (0x53, 0x1F),
+    "d": (0x44, 0x20),
+    "space": (0x20, 0x39),
+    "esc": (0x1B, 0x01),
+    "e": (0x45, 0x12),
+    "shift": (0xA0, 0x2A),
+    "ctrl": (0xA2, 0x1D),
+    "up": (0x26, 0x48),
+    "down": (0x28, 0x50),
+    "left": (0x25, 0x4B),
+    "right": (0x27, 0x4D),
+}
+
+EXTENDED_KEYS = {
+    "up", "down", "left", "right", "insert", "delete",
+    "home", "end", "page_up", "page_down", "rctrl", "ralt",
+}
+
+VK_BY_NAME: dict[str, int] = {
+    "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73,
+    "f5": 0x74, "f6": 0x75, "f7": 0x76, "f8": 0x77,
+    "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+    "insert": 0x2D, "delete": 0x2E, "home": 0x24, "end": 0x23,
+    "page_up": 0x21, "page_down": 0x22, "pageup": 0x21, "pagedown": 0x22,
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+    "space": 0x20, "backspace": 0x08, "pause": 0x13,
+    "kp_0": 0x60, "kp_1": 0x61, "kp_2": 0x62, "kp_3": 0x63, "kp_4": 0x64,
+    "kp_5": 0x65, "kp_6": 0x66, "kp_7": 0x67, "kp_8": 0x68, "kp_9": 0x69,
+    "kp_multiply": 0x6A, "kp_add": 0x6B, "kp_subtract": 0x6D,
+    "kp_decimal": 0x6E, "kp_divide": 0x6F,
+    "grave": 0xC0, "minus": 0xBD, "equal": 0xBB,
+    "bracketleft": 0xDB, "bracketright": 0xDD, "backslash": 0xDC,
+    "semicolon": 0xBA, "apostrophe": 0xDE, "comma": 0xBC, "period": 0xBE, "slash": 0xBF,
+}
+for _ch in "abcdefghijklmnopqrstuvwxyz":
+    VK_BY_NAME[_ch] = ord(_ch.upper())
+for _d in "0123456789":
+    VK_BY_NAME[_d] = ord(_d)
+
+NAME_BY_VK: dict[int, str] = {}
+for _kname, _kvk in VK_BY_NAME.items():
+    if _kvk not in NAME_BY_VK and _kname not in ("pageup", "pagedown"):
+        NAME_BY_VK[_kvk] = _kname
+
+RESERVED_HOTKEYS = {"w", "a", "s", "d", "space", "ctrl", "shift", "esc", "escape", "e", "return", "tab"}
+
+
+def is_admin() -> bool:
+    """Return True if process runs with Administrator elevation."""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def system_reduced_motion() -> bool:
+    """Query Windows SPI_GETCLIENTAREAANIMATION to respect OS animation preference."""
+    try:
+        enabled = wintypes.BOOL(True)
+        if user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(enabled), 0):
+            return not bool(enabled.value)
+    except Exception:
+        pass
+    return False
+
+
+def send_key_hw(key: str, down: bool) -> None:
+    """Send DirectInput scan-code keystroke safely via SendInput."""
+    kl = key.lower()
+    vk, scan = KEY_MAP.get(kl, (0, 0))
+    if not vk and not scan:
+        vk = VK_BY_NAME.get(kl, 0)
+        if vk:
+            scan = int(user32.MapVirtualKeyW(vk, 0))
+    if not vk and not scan:
+        return
+
+    flags = KEYEVENTF_SCANCODE | (0 if down else KEYEVENTF_KEYUP)
+    if kl in EXTENDED_KEYS or scan >= 0xE000:
+        flags |= KEYEVENTF_EXTENDEDKEY
+    inp = INPUT()
+    inp.type = INPUT_KEYBOARD
+    inp.ii.ki.wVk = 0
+    inp.ii.ki.wScan = scan & 0xFF
+    inp.ii.ki.dwFlags = flags
+    inp.ii.ki.time = 0
+    inp.ii.ki.dwExtraInfo = 0
+    sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    if sent == 0:
+        kb_flags = (0 if down else KEYEVENTF_KEYUP) | (KEYEVENTF_EXTENDEDKEY if kl in EXTENDED_KEYS else 0)
+        user32.keybd_event(vk, scan & 0xFF, kb_flags, 0)
+
+
+def send_mouse_rel(dx: int, dy: int) -> None:
+    """Send relative mouse movement delta via SendInput."""
+    inp = INPUT()
+    inp.type = INPUT_MOUSE
+    inp.ii.mi.dx = int(dx)
+    inp.ii.mi.dy = int(dy)
+    inp.ii.mi.mouseData = 0
+    inp.ii.mi.dwFlags = MOUSEEVENTF_MOVE
+    inp.ii.mi.time = 0
+    inp.ii.mi.dwExtraInfo = 0
+    sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    if sent == 0:
+        user32.mouse_event(MOUSEEVENTF_MOVE, int(dx), int(dy), 0, 0)
+
+
+def send_mouse_button(down: bool, button: str = "left") -> None:
+    """Send left or right mouse button press or release via SendInput."""
+    if button == "right":
+        flag = MOUSEEVENTF_RIGHTDOWN if down else MOUSEEVENTF_RIGHTUP
+    else:
+        flag = MOUSEEVENTF_LEFTDOWN if down else MOUSEEVENTF_LEFTUP
+    inp = INPUT()
+    inp.type = INPUT_MOUSE
+    inp.ii.mi.dwFlags = flag
+    sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    if sent == 0:
+        user32.mouse_event(flag, 0, 0, 0, 0)
+
+
+def click_screen_pos(x: int, y: int) -> None:
+    """Move cursor to exact desktop screen coordinates (multi-monitor safe) and left-click."""
+    user32.SetCursorPos(int(x), int(y))
+    time.sleep(0.04)
+    send_mouse_button(True)
+    time.sleep(0.05)
+    send_mouse_button(False)
+
+
+def active_fortnite_hwnd(allow_any_window: bool = False) -> int | None:
+    """Return foreground HWND if Fortnite (or allowed window) is active and not minimized."""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd or user32.IsIconic(hwnd):
+        return None
+    n = user32.GetWindowTextLengthW(hwnd)
+    buf = ctypes.create_unicode_buffer(n + 1)
+    user32.GetWindowTextW(hwnd, buf, n + 1)
+    title = buf.value.lower()
+    if "pirate token farm" in title or "otbros farm" in title or "fortnite assistant" in title:
+        return None
+    if allow_any_window:
+        return int(hwnd)
+    if "fortnite" in title or "unreal" in title:
+        return int(hwnd)
+    try:
+        cbuf = ctypes.create_unicode_buffer(128)
+        if user32.GetClassNameW(hwnd, cbuf, 128):
+            if "unrealwindow" in cbuf.value.lower():
+                return int(hwnd)
+    except Exception:
+        pass
+    return None
+
+
+def monitor_rect_for_hwnd(hwnd: int | None, fallback: dict) -> dict:
+    """Resolve virtual desktop monitor rectangle containing hwnd for multi-monitor capture."""
+    if hwnd:
+        try:
+            hmon = user32.MonitorFromWindow(wintypes.HWND(hwnd), MONITOR_DEFAULTTONEAREST)
+            if hmon:
+                mi = MONITORINFO()
+                mi.cbSize = ctypes.sizeof(MONITORINFO)
+                if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                    r = mi.rcMonitor
+                    w = int(r.right - r.left)
+                    h = int(r.bottom - r.top)
+                    if w > 0 and h > 0:
+                        return {"left": int(r.left), "top": int(r.top), "width": w, "height": h}
+        except Exception:
+            pass
+    return fallback
+
+
+# ---------------------------------------------------------------------------
+# Constants, Obsidian Palette & Localization
+# ---------------------------------------------------------------------------
+APP_NAME = "Pirate Token Farm"
+APP_VERSION = "v4.0"
+if getattr(sys, "frozen", False):
+    ROOT = Path(sys.executable).resolve().parent
+    BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", ROOT))
+else:
+    ROOT = Path(__file__).resolve().parent
+    BUNDLE_DIR = ROOT
+TEMPLATES = BUNDLE_DIR / "templates"
+ASSETS = BUNDLE_DIR / "assets"
+FONTS_DIR = BUNDLE_DIR / "fonts"
+CONFIG = ROOT / "settings.json"
+HEADLESS = bool(os.environ.get("PIRATE_HEADLESS") or os.environ.get("OTBROS_HEADLESS"))
+
+WIN_W = 640
+
+# Pure Obsidian Black Gradient Design System
+C_BG_TOP = (14, 15, 19)       # #0E0F13
+C_BG_BOT = (7, 8, 10)         # #07080A
+C_FOOTER_BG = (10, 11, 14)    # #0A0B0E
+C_CARD = (16, 18, 22)         # #101216
+C_CARD_HOV = (21, 24, 30)     # #15181E
+C_CARD_ACT = (24, 28, 36)     # #181C24
+C_SUNK = (9, 10, 13)          # #090A0D
+C_CTRL = (23, 26, 33)         # #171A21
+C_CTRL_HOV = (30, 34, 43)     # #1E222B
+C_SWITCH_OFF = (28, 31, 39)   # #1C1F27
+
+C_BORDER_SUB = (34, 37, 45, 255)      # subtle card hairline (#22252D)
+C_BORDER_MED = (48, 52, 62, 255)      # header / window hairline (#30343E)
+C_BORDER_CTRL = (76, 82, 96, 255)     # >= 3:1 control outline (#4C5260)
+C_BORDER_ACT = (128, 136, 154, 255)   # active / selected outline (#80889A)
+
+C_TX = (244, 245, 247)        # #F4F5F7 (17+:1)
+C_TX2 = (164, 170, 184)       # #A4AAB8 (8.0+:1)
+C_TX3 = (130, 136, 151)       # #828897 (5.2+:1)
+
+C_CTA_BG = (244, 245, 247)    # #F4F5F7
+C_CTA_HOV = (255, 255, 255)   # #FFFFFF
+C_CTA_FG = (9, 9, 11)         # #09090B
+
+C_OK = (52, 211, 153)         # #34D399
+C_RUN = (96, 165, 250)        # #60A5FA
+C_STOP = (248, 113, 113)      # #F87171
+
+FONT_FILES = {
+    "rg": ("Inter-Regular.otf", "segoeui.ttf"),
+    "md": ("Inter-Medium.otf", "segoeui.ttf"),
+    "sb": ("Inter-SemiBold.otf", "seguisb.ttf"),
+    "bd": ("Inter-Bold.otf", "segoeuib.ttf"),
+}
+
+TEXT = {
+    "ru": {
+        "sub": "Ассистент фарма и Анти-АФК для Fortnite",
+        "settings": "Настройки",
+        "back": "Назад",
+        "sec_methods": "ИГРОВОЙ МЕТОД",
+        "hint_auto": "Автоматический перезапуск",
+        "hint_afk": "Только Анти-АФК",
+        "m1_title": "1. Повторная игра",
+        "m1_desc": "Находит и нажимает «Играть снова» после завершения матча",
+        "m2_title": "2. Полный цикл через лобби",
+        "m2_desc": "Играть → ожидание таймера → выход в лобби → новый старт",
+        "m0_title": "3. Только Анти-АФК (без поиска кнопок)",
+        "m0_desc": "Отключает игровой цикл и запускает только имитацию игрока",
+        "params_title": "Параметры метода",
+        "delay_title": "Таймер цикла (Метод 2)",
+        "delay_desc": "Случайная пауза перед выходом в лобби, в минутах",
+        "safe_title": "Запасной клик «Играть»",
+        "safe_desc": "Нажимает «Играть» в лобби, если кнопка «Играть снова» недоступна",
+        "sec_afk": "АНТИ-АФК ПОВЕДЕНИЕ",
+        "afk_safety": "Только ввод клавиатуры и мыши",
+        "imm_title": "Сразу запускать Анти-АФК",
+        "imm_desc": "Не ждать экран «Подключение…» перед началом движений",
+        "human_title": "Режим «Слабый игрок»",
+        "human_desc": "Стрейфы W/A/S/D, подкаты, приседания, увороты A–D, осмотр ПКМ и камера",
+        "swing_title": "Удары киркой (ЛКМ)",
+        "swing_desc": "Случайные взмахи или серия ударов во время фарма",
+        "lmb_mode": "Режим ЛКМ:",
+        "lmb_swings": "Случайные взмахи",
+        "lmb_hold": "Зажатие ЛКМ",
+        "space_title": "Случайные прыжки",
+        "space_desc": "Периодические нажатия Пробела с переменным интервалом",
+        "walk_title": "Движение и повороты",
+        "walk_desc": "Ходьба по точкам и повороты обзора камеры",
+        "pace_label": "Темп пауз:",
+        "pace_norm": "Обычный ритм",
+        "pace_stand": "Стоять ~20 с",
+        "st_ready": "Готов к работе",
+        "st_starting": "Запуск…",
+        "st_running": "Работает",
+        "st_stopping": "Остановка…",
+        "st_stopped": "Остановлено",
+        "dt_idle": "Нажмите «Запустить» или клавишу",
+        "dt_wait_game": "Сверните окно и вернитесь в Fortnite…",
+        "dt_afk_wait": "Запуск режима «Только Анти-АФК»…",
+        "dt_method1": "Поиск кнопок «Играть снова» / «Играть»",
+        "dt_method2": "Ожидание кнопки «Играть» в лобби",
+        "dt_waiting": "Ожидание матча (~{m} мин)…",
+        "dt_clicked": "Нажато: ",
+        "dt_mouse_hold": "Зажатие ЛКМ (фарм)",
+        "dt_space": "Случайный прыжок",
+        "dt_swing": "Взмах киркой",
+        "dt_jump_swing": "Удар киркой в прыжке",
+        "dt_look": "Плавный обзор камерой",
+        "dt_idle_look": "Микро-коррекция обзора",
+        "dt_crouch": "Присед и осмотр",
+        "dt_crouch_strafe": "Присед со стрейфом",
+        "dt_slide": "Разгон и подкат",
+        "dt_slide_jump": "Подкат с прыжком",
+        "dt_wiggle": "Уворот стрейфами A–D",
+        "dt_rmb_peek": "Короткий осмотр (ПКМ)",
+        "dt_strafe": "Слабый игрок: {keys}",
+        "dt_walk_go": "Ходьба вперёд",
+        "dt_walk_stand": "Пауза ~20 с на месте",
+        "dt_walk_turn": "Разворот камеры ~180°",
+        "log_ready": "Конфигурация v4.0 загружена. DirectInput готов.",
+        "log_conn": "Экран загрузки распознан · Анти-АФК активен.",
+        "btn_start": "Запустить",
+        "btn_running": "Выполняется",
+        "btn_stop": "Остановить",
+        "btn_reset": "Сбросить настройки",
+        "undo_msg": "Настройки сброшены к значениям по умолчанию.",
+        "undo_btn": "Отменить",
+        "undo_done": "Сброс настроек отменён.",
+        "sec_perf": "ПРОИЗВОДИТЕЛЬНОСТЬ И АНИМАЦИИ",
+        "perf_note": "Нулевая нагрузка в фоне",
+        "anim_title": "Анимации интерфейса",
+        "anim_desc": "Режим без анимаций даёт мгновенный отклик и 0% CPU",
+        "anim_on": "Плавные (150 мс)",
+        "anim_off": "Отключены",
+        "sec_input": "КАЛИБРОВКА И ГОРЯЧИЕ КЛАВИШИ",
+        "turn_title": "Поворот камеры на 180° (px)",
+        "turn_desc": "Подберите под вашу чувствительность мыши в игре",
+        "hk_start": "Клавиша запуска",
+        "hk_start_desc": "Нажмите кнопку и затем любую клавишу (Esc для отмены)",
+        "hk_stop": "Клавиша остановки",
+        "hk_stop_desc": "Мгновенно прекращает движения и отпускает клавиши",
+        "hk_press": "Клавиша…",
+        "any_title": "Разрешить работу в любом окне",
+        "any_desc": "Для проверки макроса в Блокноте или на рабочем столе",
+        "sec_about": "О ПРОГРАММЕ И ДИАГНОСТИКА",
+        "about_title": "Pirate Token Farm · v4.0 Human Anti-AFK",
+        "about_desc": "Только системный ввод DirectInput (SendInput). Без чтения памяти и вмешательства в файлы игры.",
+        "admin_ok": "Администратор · DirectInput",
+        "admin_no": "Обычный режим · DirectInput",
+        "min_word": "мин",
+        "fb_on": "Запасной «Играть» вкл",
+        "fb_off": "Запасной «Играть» выкл",
+        "err_notfound": "Не найден шаблон в папке templates/: ",
+        "err_afk_req": "Включите хотя бы одну опцию Анти-АФК (кирка, прыжок, движение или «Слабый игрок»).",
+        "err_key_same": "Эта клавиша уже назначена для другого действия.",
+        "err_key_res": "Нельзя назначить игровую клавишу (W/A/S/D/Space/Shift/Ctrl/Esc/E).",
+        "log_key_set": "Назначена горячая клавиша: ",
+        "log_error": "Ошибка: ",
+        "log_retry_esc": "Меню не открылось · повторный Esc",
+    },
+    "en": {
+        "sub": "Fortnite Farming & Anti-AFK Assistant",
+        "settings": "Settings",
+        "back": "Back",
+        "sec_methods": "GAME METHOD",
+        "hint_auto": "Automatic queue loop",
+        "hint_afk": "Anti-AFK only",
+        "m1_title": "1. Play Again",
+        "m1_desc": "Detects and clicks Play Again once a match finishes",
+        "m2_title": "2. Full lobby cycle",
+        "m2_desc": "Play → wait timer → return to lobby → start again",
+        "m0_title": "3. Anti-AFK only (skip menu loop)",
+        "m0_desc": "Disables queue automation and runs player movement only",
+        "params_title": "Method parameters",
+        "delay_title": "Cycle timer (Method 2)",
+        "delay_desc": "Random delay before returning to the lobby, in minutes",
+        "safe_title": "Fallback Play click",
+        "safe_desc": "Clicks Play in the lobby when Play Again is unavailable",
+        "sec_afk": "ANTI-AFK BEHAVIOR",
+        "afk_safety": "Keyboard & mouse input only",
+        "imm_title": "Start Anti-AFK immediately",
+        "imm_desc": "Begin movement right away without waiting for Connecting…",
+        "human_title": "Casual Player mode",
+        "human_desc": "W/A/S/D strafes, sprint-slides, crouch-peeks, AD wiggles & camera look",
+        "swing_title": "Pickaxe swings (LMB)",
+        "swing_desc": "Random pickaxe swings or short combos during farming",
+        "lmb_mode": "LMB mode:",
+        "lmb_swings": "Random swings",
+        "lmb_hold": "Hold LMB",
+        "space_title": "Random jumps",
+        "space_desc": "Periodic Space jumps with randomized timing",
+        "walk_title": "Movement & turns",
+        "walk_desc": "Waypoint walking and smooth camera turns",
+        "pace_label": "Pause cadence:",
+        "pace_norm": "Normal rhythm",
+        "pace_stand": "Stand ~20 s",
+        "st_ready": "Ready",
+        "st_starting": "Starting…",
+        "st_running": "Running",
+        "st_stopping": "Stopping…",
+        "st_stopped": "Stopped",
+        "dt_idle": "Click Start or press",
+        "dt_wait_game": "Switch focus back into Fortnite…",
+        "dt_afk_wait": "Starting Anti-AFK only mode…",
+        "dt_method1": "Scanning for Play Again / Play buttons",
+        "dt_method2": "Waiting for Play button in lobby",
+        "dt_waiting": "In match timer (~{m} min left)…",
+        "dt_clicked": "Clicked: ",
+        "dt_mouse_hold": "Holding LMB (harvest)",
+        "dt_space": "Random jump",
+        "dt_swing": "Pickaxe swing",
+        "dt_jump_swing": "Jump pickaxe swing",
+        "dt_look": "Smooth camera look",
+        "dt_idle_look": "Idle aim drift",
+        "dt_crouch": "Crouch peek",
+        "dt_crouch_strafe": "Crouch strafe",
+        "dt_slide": "Sprint slide burst",
+        "dt_slide_jump": "Slide-hop combo",
+        "dt_wiggle": "AD dodge wiggle",
+        "dt_rmb_peek": "Brief ADS peek (RMB)",
+        "dt_strafe": "Casual move: {keys}",
+        "dt_walk_go": "Walking forward",
+        "dt_walk_stand": "Pausing ~20 s",
+        "dt_walk_turn": "Turning ~180°",
+        "log_ready": "Config v4.0 loaded. DirectInput ready.",
+        "log_conn": "Connecting screen detected · Anti-AFK active.",
+        "btn_start": "Start",
+        "btn_running": "Running",
+        "btn_stop": "Stop",
+        "btn_reset": "Reset settings",
+        "undo_msg": "Settings restored to defaults.",
+        "undo_btn": "Undo",
+        "undo_done": "Settings reset undone.",
+        "sec_perf": "PERFORMANCE & MOTION",
+        "perf_note": "Zero background CPU usage",
+        "anim_title": "Interface animations",
+        "anim_desc": "Disabling animations yields instant changes with 0% CPU",
+        "anim_on": "Smooth (150 ms)",
+        "anim_off": "Disabled",
+        "sec_input": "CALIBRATION & HOTKEYS",
+        "turn_title": "180° camera turn (px)",
+        "turn_desc": "Match to your in-game mouse sensitivity",
+        "hk_start": "Start hotkey",
+        "hk_start_desc": "Click the button, then press any key (Esc to cancel)",
+        "hk_stop": "Stop hotkey",
+        "hk_stop_desc": "Immediately stops and releases all held keys",
+        "hk_press": "Key…",
+        "any_title": "Allow any active window",
+        "any_desc": "Useful for testing macro behavior in Notepad or on Desktop",
+        "sec_about": "ABOUT & DIAGNOSTICS",
+        "about_title": "Pirate Token Farm · v4.0 Human Anti-AFK",
+        "about_desc": "Uses standard DirectInput (SendInput) only. Never reads process memory or modifies game files.",
+        "admin_ok": "Administrator · DirectInput",
+        "admin_no": "Standard mode · DirectInput",
+        "min_word": "min",
+        "fb_on": "Fallback Play on",
+        "fb_off": "Fallback Play off",
+        "err_notfound": "Missing template inside templates/: ",
+        "err_afk_req": "Enable at least one Anti-AFK option (Pickaxe, Jump, Movement or Casual Player).",
+        "err_key_same": "That hotkey is already assigned to the other action.",
+        "err_key_res": "Cannot bind a gameplay movement key (W/A/S/D/Space/Shift/Ctrl/Esc/E).",
+        "log_key_set": "Assigned hotkey: ",
+        "log_error": "Error: ",
+        "log_retry_esc": "Menu missed · retrying Esc",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Template Matcher (Hardened halo-masked connecting detection)
+# ---------------------------------------------------------------------------
+class Matcher:
+    def __init__(self) -> None:
+        self.data: dict[str, list[tuple[np.ndarray, np.ndarray | None, int, int]]] = {}
+        scales = (1.00, 0.94, 1.06, 0.88, 1.12, 0.80, 1.20, 0.72, 1.30, 1.40)
+        kernel = np.ones((5, 5), np.uint8)
+        for name in ("play_again", "play_button", "menu_button", "return_lobby", "connecting"):
+            path = TEMPLATES / f"{name}.png"
+            if not path.exists():
+                raise FileNotFoundError(str(path))
+            raw = np.fromfile(str(path), dtype=np.uint8)
+            img = cv2.imdecode(raw, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                raise RuntimeError(f"Cannot decode {path}")
+            h0, w0 = img.shape[:2]
+            variants = []
+            for scale in scales:
+                w = max(20, int(round(w0 * scale)))
+                h = max(12, int(round(h0 * scale)))
+                tpl = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC)
+                mask = None
+                if name == "connecting":
+                    # Dilated 5x5 halo keeps both bright letters and immediate contrast border,
+                    # isolating seasonal background colors without NaN variance or flat-white hits.
+                    fg = (tpl > 195).astype(np.uint8) * 255
+                    halo = cv2.dilate(fg, kernel)
+                    if np.count_nonzero(fg) > 10 and np.count_nonzero(halo) > np.count_nonzero(fg):
+                        tpl = np.where(fg > 0, tpl, 45).astype(np.uint8)
+                        mask = halo
+                variants.append((tpl, mask, w, h))
+            self.data[name] = variants
+
+    def find(
+        self,
+        gray: np.ndarray | None,
+        name: str,
+        threshold: float = 0.84,
+        stop_event: threading.Event | None = None,
+    ) -> tuple[float, tuple[int, int, int, int] | None]:
+        if gray is None or gray.size == 0:
+            return -1.0, None
+        best = -1.0
+        box = None
+        gh, gw = gray.shape[:2]
+        early_stop = max(threshold + 0.05, 0.94)
+        for tpl, mask, w, h in self.data.get(name, ()):
+            if stop_event is not None and stop_event.is_set():
+                return -1.0, None
+            if h >= gh or w >= gw:
+                continue
+            if mask is not None:
+                res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED, mask=mask)
+                res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+            else:
+                res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED)
+            _, score, _, loc = cv2.minMaxLoc(res)
+            if score > best:
+                best = float(score)
+                box = (int(loc[0]), int(loc[1]), int(w), int(h))
+                if best >= early_stop:
+                    break
+        if best >= threshold and box is not None:
+            return best, box
+        return best, None
+
+
+# ---------------------------------------------------------------------------
+# Automation & Anti-AFK Engine (Thread-safe, synchronized, live-reactive)
+# ---------------------------------------------------------------------------
+class Engine:
+    def __init__(self, app: "App", cap: mss.base.MSSBase) -> None:
+        self.app = app
+        self.cap = cap
+        self.stop = app.stop_event
+        self.busy = app.busy_event
+        self.lock = app.action_lock
+        self.matcher = Matcher()
+        self.fallback_mon = cap.monitors[1] if len(cap.monitors) > 1 else cap.monitors[0]
+        self.monitor = dict(self.fallback_mon)
+
+        self.w_down = False
+        self.mouse_down = False
+        self.rmb_down = False
+        self.held_keys: set[str] = set()
+        self.pitch_acc = 0
+
+        now = time.monotonic()
+        self.next_space = now + random.uniform(1.8, 5.0)
+        self.next_swing = now + random.uniform(2.2, 6.0)
+        self.next_look = now + random.uniform(1.2, 3.2)
+        self.next_idle_drift = now + random.uniform(1.6, 4.2)
+        self.next_crouch = now + random.uniform(11.0, 26.0)
+        self.next_slide = now + random.uniform(8.0, 19.0)
+        self.next_wiggle = now + random.uniform(9.5, 22.0)
+        self.next_rmb_peek = now + random.uniform(12.0, 28.0)
+        self.next_strafe = now + random.uniform(3.5, 7.5)
+        self.anti_thread: threading.Thread | None = None
+
+    def _can_act(self) -> bool:
+        """Return True when automation is active, not clicking UI, and target window is focused."""
+        return not self.stop.is_set() and not self.busy.is_set() and self.is_target_focused()
+
+    @staticmethod
+    def _next_rhythm_delay(min_s: float, max_s: float, burst_chance: float = 0.22) -> float:
+        """Return non-periodic randomized delay mixing brisk bursts and relaxed breathers."""
+        roll = random.random()
+        if roll < burst_chance:
+            return random.uniform(max(0.45, min_s * 0.35), max(0.75, min_s * 0.7))
+        if roll > 0.86:
+            return random.uniform(max_s * 1.1, max_s * 1.48)
+        return random.uniform(min_s, max_s)
+
+    def active_hwnd(self) -> int | None:
+        return active_fortnite_hwnd(allow_any_window=self.app.live("any_win"))
+
+    def is_target_focused(self) -> bool:
+        return self.active_hwnd() is not None
+
+    def current_monitor(self) -> dict:
+        hwnd = self.active_hwnd()
+        if hwnd:
+            self.monitor = monitor_rect_for_hwnd(hwnd, self.fallback_mon)
+        return self.monitor
+
+    def frame(self, cap: mss.base.MSSBase | None = None) -> np.ndarray | None:
+        c = cap or self.cap
+        mon = self.current_monitor()
+        try:
+            a = np.array(c.grab(mon))
+            if a.size == 0:
+                return None
+            return cv2.cvtColor(a, cv2.COLOR_BGRA2GRAY)
+        except Exception:
+            return None
+
+    def key_down(self, k: str) -> None:
+        if k not in self.held_keys:
+            send_key_hw(k, True)
+            self.held_keys.add(k)
+            if k == "w":
+                self.w_down = True
+
+    def key_up(self, k: str) -> None:
+        send_key_hw(k, False)
+        self.held_keys.discard(k)
+        if k == "w":
+            self.w_down = False
+
+    def tap_key(self, key: str, hold_s: float = 0.065) -> None:
+        """Send a short press while tracking key in held_keys for cleanup."""
+        with self.lock:
+            if self.stop.is_set():
+                return
+            self.key_down(key)
+        end = time.monotonic() + hold_s
+        while time.monotonic() < end:
+            if self.stop.is_set():
+                break
+            time.sleep(min(0.015, max(0.002, end - time.monotonic())))
+        with self.lock:
+            self.key_up(key)
+
+    def set_move_keys(self, target: set[str]) -> None:
+        with self.lock:
+            for k in tuple(self.held_keys - target):
+                self.key_up(k)
+            if self.busy.is_set() or self.stop.is_set() or not self.is_target_focused():
+                return
+            for k in target:
+                if k not in self.held_keys:
+                    self.key_down(k)
+
+    def walk_hold(self, on: bool) -> None:
+        self.set_move_keys({"w"} if on else set())
+
+    def _mouse_hold_set(self, on: bool, attr: str, button: str) -> None:
+        with self.lock:
+            cur = getattr(self, attr)
+            if on and not cur:
+                send_mouse_button(True, button)
+                setattr(self, attr, True)
+            elif not on and cur:
+                send_mouse_button(False, button)
+                setattr(self, attr, False)
+
+    def mouse_hold_set(self, on: bool) -> None:
+        self._mouse_hold_set(on, "mouse_down", "left")
+
+    def rmb_hold_set(self, on: bool) -> None:
+        self._mouse_hold_set(on, "rmb_down", "right")
+
+    def release_all(self) -> None:
+        with self.lock:
+            if self.mouse_down:
+                send_mouse_button(False, "left")
+                self.mouse_down = False
+            if self.rmb_down:
+                send_mouse_button(False, "right")
+                self.rmb_down = False
+            for k in set(self.held_keys) | {"w", "a", "s", "d", "shift", "ctrl", "space", "esc", "e"}:
+                send_key_hw(k, False)
+            self.held_keys.clear()
+            self.w_down = False
+
+    def anti_sleep(self, seconds: float) -> bool:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if self.stop.is_set() or self.busy.is_set() or not self.is_target_focused():
+                return False
+            time.sleep(min(0.02, max(0.002, end - time.monotonic())))
+        return True
+
+    def smooth_mouse_move(self, total_dx: int, total_dy: int = 0, duration: float = 0.42) -> bool:
+        steps = max(10, int(round(duration / 0.012)))
+        done_x = 0
+        done_y = 0
+        for i in range(1, steps + 1):
+            if self.stop.is_set() or self.busy.is_set() or not self.is_target_focused():
+                return False
+            t = i / steps
+            ease = 0.5 * (1.0 - math.cos(math.pi * t))
+            tx = round(total_dx * ease)
+            ty = round(total_dy * ease)
+            if i < steps - 1:
+                tx += random.randint(-1, 1)
+                ty += random.randint(-1, 1)
+            dx = tx - done_x
+            dy = ty - done_y
+            done_x = tx
+            done_y = ty
+            if dx or dy:
+                with self.lock:
+                    if self.busy.is_set() or self.stop.is_set() or not self.is_target_focused():
+                        return False
+                    send_mouse_rel(dx, dy)
+                    self.pitch_acc = int(clamp(self.pitch_acc + dy, -350, 350))
+            time.sleep(random.uniform(0.009, 0.015))
+        return True
+
+    def turn_around(self) -> None:
+        base = max(100, int(self.app.live("turn_px")))
+        human_on = bool(self.app.live("human"))
+        direction = random.choice((-1, 1)) if human_on else 1
+        scale = random.uniform(0.68, 1.24) if human_on else random.uniform(0.88, 1.12)
+        total = int(round(base * scale)) * direction
+        dy = int(clamp(-self.pitch_acc * 0.5 + random.randint(-45, 45), -110, 110))
+        if human_on and random.random() < 0.30:
+            # Split turn mimics human mouse lift / reset mid-swipe
+            part1 = int(round(total * random.uniform(0.45, 0.65)))
+            part2 = total - part1
+            if self.smooth_mouse_move(part1, dy // 2, duration=random.uniform(0.18, 0.28)):
+                if self.anti_sleep(random.uniform(0.06, 0.14)):
+                    self.smooth_mouse_move(part2, dy - dy // 2, duration=random.uniform(0.16, 0.28))
+            return
+        self.smooth_mouse_move(total, dy, duration=random.uniform(0.36, 0.58))
+
+    def idle_micro_fidget(self) -> None:
+        """Apply subtle organic crosshair micro-drift so aim never freezes robotically."""
+        if not self._can_act():
+            return
+        dx = random.randint(8, 36) * random.choice((-1, 1))
+        dy = int(clamp(-self.pitch_acc * random.uniform(0.15, 0.35) + random.randint(-14, 14), -38, 38))
+        self.app.emit("detail", {"key": "dt_idle_look"})
+        self.smooth_mouse_move(dx, dy, duration=random.uniform(0.14, 0.28))
+
+    def human_look(self) -> None:
+        base = max(100, int(self.app.live("turn_px")))
+        roll = random.random()
+        big_turn = roll < 0.26
+        frac = random.uniform(0.45, 0.96) if big_turn else random.uniform(0.07, 0.36)
+        direction = random.choice((-1, 1))
+        total_dx = int(round(base * frac)) * direction
+        pitch_pull = int(-self.pitch_acc * random.uniform(0.45, 0.75))
+        total_dy = int(clamp(pitch_pull + random.randint(-85, 85), -150, 150))
+        dur = random.uniform(0.30, 0.54) if big_turn else random.uniform(0.16, 0.34)
+        self.app.emit("detail", {"key": "dt_look"})
+        if self._can_act():
+            ok = self.smooth_mouse_move(total_dx, total_dy, duration=dur)
+            if ok and big_turn and random.random() < 0.40 and self.anti_sleep(random.uniform(0.08, 0.20)):
+                # Casual shoulder check: partial return glance toward original heading
+                ret_dx = -int(round(total_dx * random.uniform(0.55, 0.85)))
+                ret_dy = int(clamp(-self.pitch_acc * 0.3 + random.randint(-22, 22), -55, 55))
+                self.smooth_mouse_move(ret_dx, ret_dy, duration=random.uniform(0.20, 0.34))
+
+    def do_jump_swing(self) -> None:
+        """Casual mid-air jump + aim flick + pickaxe swing combo."""
+        if self.mouse_down or self.app.live("mouse") or not self._can_act():
+            return
+        self.app.emit("detail", {"key": "dt_jump_swing"})
+        self.app.emit("log", {"key": "dt_jump_swing"})
+        try:
+            self.tap_key("space", hold_s=random.uniform(0.055, 0.10))
+            if not self.anti_sleep(random.uniform(0.06, 0.13)):
+                return
+            if not self._can_act():
+                return
+            with self.lock:
+                if self._can_act():
+                    send_mouse_rel(random.randint(-36, 36), random.randint(-10, 14))
+            self.mouse_hold_set(True)
+            ok = self.anti_sleep(random.uniform(0.08, 0.16))
+            self.mouse_hold_set(False)
+            if ok and random.random() < 0.45 and self.anti_sleep(random.uniform(0.26, 0.42)):
+                if self._can_act():
+                    self.mouse_hold_set(True)
+                    self.anti_sleep(random.uniform(0.07, 0.13))
+                    self.mouse_hold_set(False)
+        finally:
+            self.mouse_hold_set(False)
+
+    def do_pickaxe_swing(self, allow_jump: bool = False) -> None:
+        if self.mouse_down or self.app.live("mouse"):
+            return
+        if allow_jump and self.app.live("human") and random.random() < 0.24:
+            self.do_jump_swing()
+            return
+        with self.lock:
+            had_shift = "shift" in self.held_keys
+            if had_shift:
+                self.key_up("shift")
+
+        self.app.emit("detail", {"key": "dt_swing"})
+        self.app.emit("log", {"key": "dt_swing"})
+        mode = random.random()
+        try:
+            if mode < 0.38:
+                with self.lock:
+                    if not self._can_act():
+                        return
+                self.mouse_hold_set(True)
+                self.anti_sleep(random.uniform(0.08, 0.16))
+                self.mouse_hold_set(False)
+                if random.random() < 0.5 and self._can_act():
+                    with self.lock:
+                        send_mouse_rel(random.randint(-28, 28), random.randint(-12, 12))
+            elif mode < 0.76:
+                hits = random.choice((2, 2, 3))
+                for idx in range(hits):
+                    if not self._can_act():
+                        break
+                    self.mouse_hold_set(True)
+                    ok = self.anti_sleep(random.uniform(0.07, 0.13))
+                    self.mouse_hold_set(False)
+                    if not ok:
+                        break
+                    if idx < hits - 1:
+                        if self.app.live("human") and random.random() < 0.45 and self._can_act():
+                            self.tap_key(random.choice(("a", "d")), hold_s=random.uniform(0.09, 0.18))
+                        if random.random() < 0.65 and self._can_act():
+                            with self.lock:
+                                send_mouse_rel(random.randint(-22, 22), random.randint(-8, 8))
+                        if not self.anti_sleep(random.uniform(0.32, 0.56)):
+                            break
+            else:
+                with self.lock:
+                    if not self._can_act():
+                        return
+                self.mouse_hold_set(True)
+                self.anti_sleep(random.uniform(0.65, 1.35))
+                self.mouse_hold_set(False)
+        finally:
+            self.mouse_hold_set(False)
+            with self.lock:
+                if had_shift and self.w_down and self._can_act():
+                    self.key_down("shift")
+
+    def do_slide_burst(self, allow_jump: bool = True) -> bool:
+        """Sprint forward into a curved Fortnite slide with optional slide-hop exit."""
+        if not self._can_act():
+            return False
+        self.app.emit("detail", {"key": "dt_slide"})
+        if random.random() < 0.45:
+            self.app.emit("log", {"key": "dt_slide"})
+        try:
+            self.set_move_keys({"w", "shift"})
+            if not self.anti_sleep(random.uniform(0.62, 1.08)):
+                return True
+            if self._can_act() and random.random() < 0.60:
+                base = max(100, int(self.app.live("turn_px")))
+                drift = int(round(base * random.uniform(0.04, 0.12))) * random.choice((-1, 1))
+                if not self.smooth_mouse_move(drift, random.randint(-12, 14), duration=random.uniform(0.16, 0.26)):
+                    return True
+
+            # Initiate slide while holding W+Shift, then ease out of Shift into slide glide
+            self.tap_key("ctrl", hold_s=random.uniform(0.06, 0.10))
+            self.set_move_keys({"w"})
+            slide_dx = random.randint(45, 165) * random.choice((-1, 1))
+            slide_dy = random.randint(12, 38)
+            if not self.smooth_mouse_move(slide_dx, slide_dy, duration=random.uniform(0.24, 0.44)):
+                return True
+            if not self.anti_sleep(random.uniform(0.18, 0.34)):
+                return True
+
+            if allow_jump and random.random() < 0.88 and self._can_act():
+                self.app.emit("detail", {"key": "dt_slide_jump"})
+                self.tap_key("space", hold_s=random.uniform(0.055, 0.095))
+                if self._can_act():
+                    self.set_move_keys({"w", random.choice(("a", "d"))})
+                    self.anti_sleep(random.uniform(0.20, 0.36))
+            elif self._can_act():
+                # Ride out the slide momentum before toggling out so posture returns to standing cleanly
+                if self.anti_sleep(random.uniform(0.55, 0.85)) and self._can_act():
+                    self.tap_key("ctrl", hold_s=0.055)
+                    self.anti_sleep(random.uniform(0.10, 0.22))
+        finally:
+            if self._can_act():
+                self.set_move_keys(set())
+            else:
+                self.release_all()
+        return True
+
+    def do_combat_wiggle(self) -> bool:
+        """Rapid alternating left/right strafe dodge with counter-aim ticks."""
+        if not self._can_act():
+            return False
+        self.app.emit("detail", {"key": "dt_wiggle"})
+        side = random.choice((-1, 1))
+        steps = random.randint(3, 5)
+        try:
+            for idx in range(steps):
+                if not self._can_act():
+                    break
+                if side < 0:
+                    keys = random.choice((("a",), ("w", "a"), ("s", "a")))
+                else:
+                    keys = random.choice((("d",), ("w", "d"), ("s", "d")))
+                self.set_move_keys(set(keys))
+                if random.random() < 0.70 and self._can_act():
+                    with self.lock:
+                        if self._can_act():
+                            send_mouse_rel(-side * random.randint(10, 32), random.randint(-8, 10))
+                if not self.anti_sleep(random.uniform(0.12, 0.28)):
+                    break
+                if idx < steps - 1 and random.random() < 0.28:
+                    self.set_move_keys(set())
+                    if not self.anti_sleep(random.uniform(0.05, 0.11)):
+                        break
+                side = -side
+        finally:
+            if self._can_act():
+                self.set_move_keys(set())
+            else:
+                self.release_all()
+        return True
+
+    def do_crouch_peek(self, allow_strafe: bool = True) -> bool:
+        """Toggle crouch cleanly with either brief cover strafe or double crouch-peek."""
+        if not self._can_act():
+            return False
+        if "shift" in self.held_keys:
+            self.set_move_keys(self.held_keys - {"shift"})
+        did_move = False
+        crouched = False
+        try:
+            self.tap_key("ctrl", hold_s=0.06)
+            crouched = True
+            if allow_strafe and self._can_act() and random.random() < 0.72:
+                did_move = True
+                self.app.emit("detail", {"key": "dt_crouch_strafe"})
+                strafe_keys = random.choice((("a",), ("d",), ("w", "a"), ("w", "d"), ("s",)))
+                self.set_move_keys(set(strafe_keys))
+                ok = self.smooth_mouse_move(
+                    random.randint(35, 95) * random.choice((-1, 1)),
+                    random.randint(-14, 18),
+                    duration=random.uniform(0.22, 0.38),
+                )
+                if ok:
+                    self.anti_sleep(random.uniform(0.32, 0.78))
+                self.set_move_keys(set())
+            else:
+                self.app.emit("detail", {"key": "dt_crouch"})
+                if self.anti_sleep(random.uniform(0.26, 0.58)) and random.random() < 0.35 and self._can_act():
+                    # Second quick crouch-uncrouch peek pulse
+                    self.tap_key("ctrl", hold_s=0.055)
+                    crouched = False
+                    if self.anti_sleep(random.uniform(0.16, 0.32)) and self._can_act():
+                        self.tap_key("ctrl", hold_s=0.055)
+                        crouched = True
+                        self.anti_sleep(random.uniform(0.20, 0.44))
+            if crouched and self._can_act():
+                self.tap_key("ctrl", hold_s=0.06)
+                crouched = False
+        finally:
+            if crouched and self._can_act():
+                self.tap_key("ctrl", hold_s=0.06)
+                crouched = False
+            if did_move:
+                if self._can_act():
+                    self.set_move_keys(set())
+                else:
+                    self.release_all()
+        return did_move
+
+    def do_rmb_peek(self) -> None:
+        """Brief harmless right-click aim/ADS glance paired with fine camera tracking."""
+        if self.mouse_down or self.app.live("mouse") or not self._can_act():
+            return
+        self.app.emit("detail", {"key": "dt_rmb_peek"})
+        try:
+            self.rmb_hold_set(True)
+            dx = random.randint(24, 96) * random.choice((-1, 1))
+            dy = random.randint(-28, 28)
+            ok = self.smooth_mouse_move(dx, dy, duration=random.uniform(0.18, 0.36))
+            if ok:
+                self.anti_sleep(random.uniform(0.06, 0.16))
+        finally:
+            self.rmb_hold_set(False)
+
+    def click(self, name: str, label: str, timeout: float | None = None) -> bool:
+        start = time.monotonic()
+        while not self.stop.is_set():
+            if not self.is_target_focused():
+                if timeout is not None and (time.monotonic() - start) >= timeout:
+                    return False
+                time.sleep(0.2)
+                continue
+            gray = self.frame()
+            if gray is None:
+                if timeout is not None and (time.monotonic() - start) >= timeout:
+                    return False
+                time.sleep(0.2)
+                continue
+            _, box = self.matcher.find(gray, name, stop_event=self.stop)
+            if box is not None:
+                x, y, w, h = box
+                px = self.monitor["left"] + x + w // 2
+                py = self.monitor["top"] + y + h // 2
+                with self.lock:
+                    if not self.is_target_focused():
+                        time.sleep(0.15)
+                        continue
+                    self.busy.set()
+                    try:
+                        self.release_all()
+                        click_screen_pos(px, py)
+                        self.app.emit("detail", f"{self.app.tr('dt_clicked')}{label}")
+                        self.app.emit("log", f"{self.app.tr('dt_clicked')}{label}")
+                        time.sleep(0.65)
+                    finally:
+                        self.busy.clear()
+                return True
+            if timeout is not None and (time.monotonic() - start) >= timeout:
+                return False
+            time.sleep(0.16)
+        return False
+
+    def _pick_human_move(self, prev_tag: str) -> tuple[str, set[str], float]:
+        choices = [
+            ("w", {"w"}, (1.0, 2.9), 21),
+            ("w+shift", {"w", "shift"}, (0.85, 2.1), 13),
+            ("w+a+shift", {"w", "a", "shift"}, (0.7, 1.5), 6),
+            ("w+d+shift", {"w", "d", "shift"}, (0.7, 1.5), 6),
+            ("w+a", {"w", "a"}, (0.85, 2.3), 12),
+            ("w+d", {"w", "d"}, (0.85, 2.3), 12),
+            ("a", {"a"}, (0.55, 1.65), 11),
+            ("d", {"d"}, (0.55, 1.65), 11),
+            ("s", {"s"}, (0.4, 1.05), 5),
+            ("s+a", {"s", "a"}, (0.45, 1.15), 3),
+            ("s+d", {"s", "d"}, (0.45, 1.15), 3),
+            ("pause", set(), (0.28, 1.65), 8),
+        ]
+        pool = [c for c in choices if c[0] != prev_tag]
+        weights = [c[3] for c in pool]
+        tag, keys, dur_rng, _ = random.choices(pool, weights=weights, k=1)[0]
+        return tag, set(keys), random.uniform(*dur_rng)
+
+    def anti_loop(self) -> None:
+        """Humanized Anti-AFK loop reading live settings dynamically."""
+        method = int(self.app.live("method"))
+        afk_active = bool(self.app.live("immediate") or method == 0)
+        blocked_until_reconnect = False
+        connecting_was_absent = True
+
+        wstate = "init"
+        wend = time.monotonic() + 0.4
+        wstate_prev = None
+        move_tag = ""
+        move_steps_count = 0
+        next_vision_check = 0.0
+        action_visible = False
+
+        try:
+            with mss.MSS() as local_cap:
+                while not self.stop.is_set():
+                    use_imm = bool(self.app.live("immediate"))
+                    use_human = bool(self.app.live("human"))
+                    use_swing = bool(self.app.live("swing"))
+                    use_mouse = bool(self.app.live("mouse"))
+                    use_space = bool(self.app.live("space"))
+                    use_walk = bool(self.app.live("walk"))
+                    use_stand = bool(self.app.live("stand"))
+                    use_safe = bool(self.app.live("safe"))
+
+                    if not (use_human or use_swing or use_space or use_walk or use_mouse):
+                        self.release_all()
+                        time.sleep(0.2)
+                        continue
+
+                    if self.busy.is_set():
+                        self.release_all()
+                        time.sleep(0.08)
+                        continue
+
+                    now = time.monotonic()
+                    if method == 0:
+                        action_visible = False
+                    elif now >= next_vision_check:
+                        next_vision_check = now + 0.85
+                        gray = self.frame(local_cap) if self.is_target_focused() else None
+                        if method == 1:
+                            buttons = ["play_again", "play_button"] if use_safe else ["play_again"]
+                        else:
+                            buttons = ["play_button", "menu_button", "return_lobby"]
+
+                        action_visible = False
+                        if gray is not None:
+                            for bname in buttons:
+                                _, bbox = self.matcher.find(gray, bname, stop_event=self.stop)
+                                if bbox is not None or self.stop.is_set():
+                                    action_visible = (bbox is not None)
+                                    break
+
+                        if gray is not None and not use_imm and not self.stop.is_set():
+                            _, cbox = self.matcher.find(gray, "connecting", 0.72, stop_event=self.stop)
+                            connecting_now = cbox is not None
+                            if not connecting_now:
+                                connecting_was_absent = True
+                            elif connecting_was_absent:
+                                connecting_was_absent = False
+                                afk_active = True
+                                blocked_until_reconnect = False
+                                self.app.emit("log", {"key": "log_conn"})
+
+                    if action_visible:
+                        self.release_all()
+                        if not use_imm and method != 0:
+                            afk_active = False
+                            blocked_until_reconnect = True
+                        time.sleep(0.22)
+                        continue
+
+                    if use_imm or method == 0:
+                        afk_active = True
+                        blocked_until_reconnect = False
+
+                    if not afk_active or blocked_until_reconnect or not self.is_target_focused():
+                        self.release_all()
+                        time.sleep(0.16)
+                        continue
+
+                    # 1. Pickaxe hold or randomized human swings
+                    if use_mouse:
+                        if not self.mouse_down:
+                            self.mouse_hold_set(True)
+                            self.app.emit("detail", {"key": "dt_mouse_hold"})
+                    else:
+                        self.mouse_hold_set(False)
+                        if use_swing and now >= self.next_swing:
+                            self.do_pickaxe_swing(allow_jump=use_space)
+                            self.next_swing = time.monotonic() + self._next_rhythm_delay(2.8, 10.5)
+
+                    # 2. Random jumps (Space)
+                    if use_space and now >= self.next_space:
+                        if self._can_act():
+                            self.tap_key("space", hold_s=random.uniform(0.055, 0.11))
+                            self.app.emit("detail", {"key": "dt_space"})
+                            self.app.emit("log", {"key": "dt_space"})
+                        if random.random() < 0.22 and self.anti_sleep(random.uniform(0.72, 1.15)):
+                            if self._can_act():
+                                self.tap_key("space", hold_s=random.uniform(0.055, 0.10))
+                        self.next_space = time.monotonic() + self._next_rhythm_delay(2.4, 10.5)
+
+                    # 3. Casual Player camera look, micro-drift & non-periodic tactical maneuvers
+                    if use_human:
+                        now = time.monotonic()
+                        is_standing = (wstate == "stand")
+                        if now >= self.next_look:
+                            self.human_look()
+                            after_look = time.monotonic()
+                            self.next_look = after_look + self._next_rhythm_delay(1.3, 4.2, burst_chance=0.26)
+                            self.next_idle_drift = max(self.next_idle_drift, after_look + random.uniform(1.0, 2.4))
+                        elif now >= self.next_idle_drift and (is_standing or move_tag == "pause"):
+                            self.idle_micro_fidget()
+                            self.next_idle_drift = time.monotonic() + random.uniform(1.2, 3.2)
+
+                        now = time.monotonic()
+                        if not is_standing and now >= self.next_slide:
+                            self.do_slide_burst(allow_jump=use_space)
+                            after = time.monotonic()
+                            self.next_slide = after + self._next_rhythm_delay(10.0, 24.0)
+                            wstate = "walk"
+                            move_tag = ""
+                            wend = after + random.uniform(0.05, 0.24)
+                        elif not is_standing and now >= self.next_wiggle:
+                            self.do_combat_wiggle()
+                            after = time.monotonic()
+                            self.next_wiggle = after + self._next_rhythm_delay(11.0, 26.0)
+                            wstate = "walk"
+                            move_tag = ""
+                            wend = after + random.uniform(0.05, 0.24)
+                        elif now >= self.next_crouch:
+                            if self._can_act():
+                                did_move = self.do_crouch_peek(allow_strafe=(not is_standing))
+                                after = time.monotonic()
+                                self.next_crouch = after + self._next_rhythm_delay(14.0, 34.0)
+                                if did_move:
+                                    wstate = "walk"
+                                    move_tag = ""
+                                    wend = after + random.uniform(0.06, 0.25)
+                            else:
+                                self.next_crouch = time.monotonic() + 2.0
+                        elif now >= self.next_rmb_peek and not use_mouse and not self.mouse_down:
+                            self.do_rmb_peek()
+                            self.next_rmb_peek = time.monotonic() + self._next_rhythm_delay(13.0, 30.0)
+
+                    # 4. Movement & turns
+                    if use_human:
+                        if wstate == "init" or now >= wend:
+                            if wstate == "stand":
+                                self.set_move_keys(set())
+                                if use_walk:
+                                    self.turn_around()
+                            move_steps_count += 1
+                            if use_walk and use_stand and move_steps_count >= random.randint(6, 10):
+                                move_steps_count = 0
+                                wstate = "stand"
+                                self.set_move_keys(set())
+                                wend = time.monotonic() + random.uniform(14.0, 22.0)
+                                self.app.emit("detail", {"key": "dt_walk_stand"})
+                                self.app.emit("log", {"key": "dt_walk_stand"})
+                            else:
+                                wstate = "walk"
+                                move_tag, move_keys, dur = self._pick_human_move(move_tag)
+                                self.set_move_keys(move_keys)
+                                wend = time.monotonic() + dur
+                                label_keys = "pause" if not move_keys else "+".join(k.upper() for k in sorted(move_keys))
+                                self.app.emit("detail", {"key": "dt_strafe", "keys": label_keys})
+                    elif use_walk:
+                        if wstate == "init" and now >= wend:
+                            wstate = "walk"
+                            wend = now + random.uniform(20.0, 45.0)
+                            self.walk_hold(True)
+                        elif wstate == "walk":
+                            self.walk_hold(True)
+                            if now >= self.next_strafe:
+                                sk = random.choice(("a", "d"))
+                                self.tap_key(sk, hold_s=random.uniform(0.10, 0.24))
+                                if not self.busy.is_set() and self.is_target_focused():
+                                    with self.lock:
+                                        send_mouse_rel(random.choice((-28, 28)), 0)
+                                self.next_strafe = now + random.uniform(4.5, 9.5)
+                            if now >= wend:
+                                self.walk_hold(False)
+                                wstate = "stand" if use_stand else "turn"
+                                wend = now + random.uniform(16.0, 24.0) if use_stand else now + random.uniform(0.15, 0.35)
+                        elif wstate == "stand":
+                            self.walk_hold(False)
+                            if now >= wend:
+                                wstate = "turn"
+                                wend = now + random.uniform(0.15, 0.35)
+                        elif wstate == "turn":
+                            self.walk_hold(False)
+                            if now >= wend:
+                                self.app.emit("detail", {"key": "dt_walk_turn"})
+                                self.app.emit("log", {"key": "dt_walk_turn"})
+                                if not self.busy.is_set() and self.is_target_focused():
+                                    self.turn_around()
+                                wstate = "walk"
+                                wend = time.monotonic() + random.uniform(20.0, 48.0)
+                                self.walk_hold(True)
+
+                        if wstate != wstate_prev:
+                            wstate_prev = wstate
+                            if wstate == "walk":
+                                self.app.emit("detail", {"key": "dt_walk_go"})
+                                self.app.emit("log", {"key": "dt_walk_go"})
+                            elif wstate == "stand":
+                                self.app.emit("detail", {"key": "dt_walk_stand"})
+                                self.app.emit("log", {"key": "dt_walk_stand"})
+                    else:
+                        self.set_move_keys(set())
+
+                    time.sleep(0.06)
+        except Exception as e:
+            self.app.emit("error", str(e))
+        finally:
+            self.release_all()
+
+    def method1(self) -> None:
+        self.app.emit("status", "running")
+        self.app.emit("detail", {"key": "dt_method1"})
+        while not self.stop.is_set():
+            if not self.is_target_focused():
+                time.sleep(0.25)
+                continue
+            gray = self.frame()
+            if gray is None:
+                time.sleep(0.25)
+                continue
+            _, again = self.matcher.find(gray, "play_again")
+            play = None
+            if again is None and self.app.live("safe"):
+                _, play = self.matcher.find(gray, "play_button")
+            if again is not None:
+                if self.click("play_again", "Play Again", timeout=3.0):
+                    self.wait(7.5)
+            elif play is not None:
+                if self.click("play_button", "Play", timeout=3.0):
+                    self.wait(7.5)
+            time.sleep(0.25)
+
+    def method2(self) -> None:
+        self.app.emit("status", "running")
+        while not self.stop.is_set():
+            self.app.emit("detail", {"key": "dt_method2"})
+            if not self.click("play_button", "Play"):
+                break
+            lo = int(self.app.live("min"))
+            hi = int(self.app.live("max"))
+            if lo > hi:
+                lo, hi = hi, lo
+            end = time.monotonic() + random.uniform(lo * 60.0, hi * 60.0)
+            while not self.stop.is_set() and time.monotonic() < end:
+                rem_min = max(1, int(math.ceil((end - time.monotonic()) / 60.0)))
+                self.app.emit("detail", {"key": "dt_waiting", "m": rem_min})
+                time.sleep(0.5)
+            if self.stop.is_set():
+                break
+
+            with self.lock:
+                self.busy.set()
+                try:
+                    self.release_all()
+                    if self.is_target_focused():
+                        send_key_hw("esc", True)
+                        time.sleep(0.08)
+                        send_key_hw("esc", False)
+                finally:
+                    self.busy.clear()
+            self.wait(0.8)
+
+            if not self.click("menu_button", "Menu", timeout=18.0):
+                if self.stop.is_set():
+                    break
+                self.app.emit("log", {"key": "log_retry_esc"})
+                if self.is_target_focused():
+                    self.tap_key("esc", hold_s=0.08)
+                if not self.click("menu_button", "Menu", timeout=15.0):
+                    continue
+            if not self.click("return_lobby", "Return to Lobby", timeout=25.0):
+                continue
+            self.wait(3.0)
+
+    def wait(self, seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while not self.stop.is_set() and time.monotonic() < end:
+            time.sleep(0.1)
+
+    def run(self, method: int) -> None:
+        try:
+            self.app.emit("status", "starting")
+            self.app.emit("detail", {"key": "dt_afk_wait" if method == 0 else "dt_wait_game"})
+            self.wait(2.0 if method == 0 else 3.0)
+            if self.stop.is_set():
+                return
+
+            self.anti_thread = threading.Thread(target=self.anti_loop, daemon=True)
+            self.anti_thread.start()
+
+            if method == 0:
+                self.app.emit("status", "running")
+                parts = []
+                if self.app.live("human"):
+                    parts.append("Human")
+                if self.app.live("swing"):
+                    parts.append("Pickaxe")
+                if self.app.live("space"):
+                    parts.append("Space")
+                if self.app.live("walk"):
+                    parts.append("WASD")
+                if self.app.live("mouse"):
+                    parts.append("LMB")
+                self.app.emit("detail", " + ".join(parts) if parts else "AFK")
+                while not self.stop.is_set():
+                    time.sleep(0.25)
+            elif method == 1:
+                self.method1()
+            elif method == 2:
+                self.method2()
+        except Exception as e:
+            self.app.emit("error", str(e))
+        finally:
+            self.stop.set()
+            self.release_all()
+            if self.anti_thread is not None and self.anti_thread.is_alive():
+                self.anti_thread.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Color & Font Utilities
+# ---------------------------------------------------------------------------
+def hexc(c: tuple[int, int, int]) -> str:
+    return "#%02x%02x%02x" % c
+
+
+def clamp(v: float, a: float, b: float) -> float:
+    return a if v < a else (b if v > b else v)
+
+
+def mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    t = clamp(t, 0.0, 1.0)
+    return (
+        int(round(a[0] + (b[0] - a[0]) * t)),
+        int(round(a[1] + (b[1] - a[1]) * t)),
+        int(round(a[2] + (b[2] - a[2]) * t)),
+    )
+
+
+def register_private_fonts() -> None:
+    """Register bundled Inter OTF fonts privately so Win32 GDI/Tk/PIL share clean metrics."""
+    fdir = FONTS_DIR
+    for fn, _ in FONT_FILES.values():
+        p = fdir / fn
+        if p.exists():
+            try:
+                gdi32.AddFontResourceExW(str(p), 0x10, 0)
+            except Exception:
+                pass
+
+
+def font_candidates(weight: str) -> list[str]:
+    own, win = FONT_FILES.get(weight, FONT_FILES["rg"])
+    c = [str(FONTS_DIR / own)]
+    wd = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    c.append(str(wd / win))
+    c.append(str(wd / ("arialbd.ttf" if weight in ("sb", "bd") else "arial.ttf")))
+    return c
+
+
+# ---------------------------------------------------------------------------
+# Layered Zero-Lag Obsidian UI Application (Pirate Token Farm v4.0)
+# ---------------------------------------------------------------------------
+DEFAULTS = {
+    "lang": "ru",
+    "start_key": "f6",
+    "stop_key": "f7",
+    "method": 1,
+    "safe": True,
+    "immediate": True,
+    "human": True,
+    "swing": True,
+    "mouse": False,
+    "space": True,
+    "walk": True,
+    "stand": False,
+    "any_win": False,
+    "min": 8,
+    "max": 10,
+    "turn_px": 2000,
+    "anim": True,
+}
+
+
+class App:
+    def __init__(self, root: tk.Tk) -> None:
+        register_private_fonts()
+        self.root = root
+        self.root.title(APP_NAME)
+        self.root.configure(bg=hexc(C_BG_BOT))
+        self.root.resizable(False, False)
+
+        try:
+            dpi = float(self.root.winfo_fpixels("1i"))
+        except Exception:
+            dpi = 96.0
+        self.S = clamp(dpi / 96.0, 1.0, 2.5)
+        self.W = WIN_W
+        self.Wp = int(round(self.W * self.S))
+
+        self.events: queue.Queue = queue.Queue()
+        self.stop_event = threading.Event()
+        self.busy_event = threading.Event()
+        self.action_lock = threading.RLock()
+        self.worker: threading.Thread | None = None
+        self.engine: Engine | None = None
+        self.running = False
+        self.state = "ready"  # ready | starting | running | stopping
+
+        self.cfg = dict(DEFAULTS)
+        self._state_lock = threading.Lock()
+        self.page = "main"      # main | set
+        self.params_open = False
+        self.undo_snap: dict | None = None
+        self.capturing: str | None = None
+        self.hotkeys: list = []
+        self._vk_prev: dict[str, bool] = {}
+
+        self.detail_ref: str | dict = {"key": "dt_idle"}
+        self.log: deque[tuple[str, str]] = deque(maxlen=2)
+
+        # Animation state (runs ONLY during active 150ms switch slides -> 0% idle CPU)
+        self.anim_jobs: dict[str, dict] = {}
+        self.anim_running = False
+        self.fonts: dict[tuple[float, str], ImageFont.FreeTypeFont] = {}
+        self.sprites: dict[str, ImageTk.PhotoImage] = {}
+        self._pil_sprites: dict[str, Image.Image] = {}
+        self.dyn_photos: dict[str, ImageTk.PhotoImage] = {}
+        self._bg_photo: ImageTk.PhotoImage | None = None
+        self._bg_item: int | None = None
+        self._canvas_items: dict[str, int] = {}
+        self._switch_items: dict[str, tuple[int, int, float, float]] = {}
+
+        self.regions: list[tuple[str, float, float, float, float, object]] = []
+        self.hover_id: str | None = None
+        self.scroll_y = 0.0
+        self.total_h = 760.0
+        self.view_h = 760.0
+        self.last_headless_img: Image.Image | None = None
+        self._headless_meta: dict = {}
+
+        self._load()
+        if system_reduced_motion():
+            self.cfg["anim"] = False
+        self.set_icon()
+        self._bake_sprites()
+
+        self.cv = tk.Canvas(
+            self.root,
+            width=self.Wp,
+            height=680,
+            bg=hexc(C_BG_BOT),
+            highlightthickness=0,
+            bd=0,
+        )
+        self.cv.pack(fill="both", expand=True)
+        self.cv.bind("<Motion>", self.on_move)
+        self.cv.bind("<Leave>", self.on_leave)
+        self.cv.bind("<Button-1>", self.on_click)
+        self.root.bind_all("<MouseWheel>", self.on_wheel)
+
+        self.add_log(self.tr("log_ready") + " · " + (self.tr("admin_ok") if is_admin() else self.tr("admin_no")))
+        self.rebuild_ui(snap=True)
+        self.place_window()
+        self.dark_titlebar()
+        self.bind_hotkeys()
+        self.root.after(55, self.poll)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+
+    # ---------------- Live Thread-Safe State & Config ----------------
+    def live(self, key: str):
+        with self._state_lock:
+            return self.cfg.get(key)
+
+    def set_cfg(self, key: str, val) -> None:
+        with self._state_lock:
+            self.cfg[key] = val
+
+    def tr(self, k: str) -> str:
+        lang = self.live("lang")
+        return TEXT.get(lang, TEXT["ru"]).get(k, k)
+
+    def emit(self, k: str, v: object) -> None:
+        self.events.put((k, v))
+
+    def ref(self, r: str | dict) -> str:
+        if isinstance(r, dict):
+            tpl = self.tr(r.get("key", ""))
+            if "m" in r:
+                return tpl.format(m=r["m"])
+            if "keys" in r:
+                return tpl.format(keys=r["keys"])
+            return tpl
+        return str(r)
+
+    def add_log(self, msg: str) -> None:
+        self.log.append((time.strftime("%H:%M:%S"), msg))
+
+    def _load(self) -> None:
+        try:
+            if not CONFIG.exists():
+                return
+            d = json.loads(CONFIG.read_text(encoding="utf-8"))
+            if d.get("lang") in ("ru", "en"):
+                self.cfg["lang"] = d["lang"]
+            for k in ("start_key", "stop_key"):
+                if isinstance(d.get(k), str) and d[k].strip():
+                    self.cfg[k] = d[k].strip().lower()
+            # Backward compatibility: old no_method=True migrates cleanly to method=0
+            if d.get("no_method"):
+                self.cfg["method"] = 0
+            elif d.get("method") in (0, 1, 2):
+                self.cfg["method"] = int(d["method"])
+            for bk in ("safe", "immediate", "human", "swing", "mouse", "space", "walk", "stand", "any_win"):
+                if bk in d:
+                    self.cfg[bk] = bool(d[bk])
+            self.cfg["min"] = int(clamp(int(d.get("min", DEFAULTS["min"])), 1, 180))
+            self.cfg["max"] = int(clamp(int(d.get("max", DEFAULTS["max"])), self.cfg["min"], 180))
+            self.cfg["turn_px"] = int(clamp(int(d.get("turn_px", DEFAULTS["turn_px"])), 200, 20000))
+            if "anim" in d:
+                self.cfg["anim"] = bool(d["anim"])
+            elif d.get("perf") == "off":
+                self.cfg["anim"] = False
+        except Exception:
+            pass
+
+    def save(self) -> None:
+        try:
+            with self._state_lock:
+                snap = dict(self.cfg)
+            snap["no_method"] = snap["method"] == 0
+            tmp = CONFIG.with_suffix(".tmp")
+            tmp.write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(CONFIG)
+        except Exception:
+            pass
+
+    # ---------------- Window Icon & Dark Titlebar ----------------
+    def set_icon(self) -> None:
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("piratetoken.farm.app")
+        except Exception:
+            pass
+        try:
+            ico = ASSETS / "icon.ico"
+            if ico.exists():
+                self.root.iconbitmap(default=str(ico))
+        except Exception:
+            pass
+
+    def dark_titlebar(self) -> None:
+        try:
+            self.root.update_idletasks()
+            hwnd = user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+            dwm = ctypes.windll.dwmapi
+            v = ctypes.c_int(1)
+            dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(v), 4)
+            col = ctypes.c_int(0x00130F0E)  # COLORREF 0x00BBGGRR matching #0E0F13
+            dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(col), 4)
+        except Exception:
+            pass
+
+    def place_window(self) -> None:
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        ww = self.Wp
+        wh = int(min(round(self.view_h * self.S), sh - 60))
+        x = max(12, (sw - ww) // 2)
+        y = max(12, (sh - wh) // 2 - 12)
+        self.root.geometry(f"{ww}x{wh}+{x}+{y}")
+
+    # ---------------- PIL Typography & Pre-Baked Sprites ----------------
+    def fnt(self, size: float, w: str = "rg") -> ImageFont.FreeTypeFont:
+        key = (round(size * self.S, 1), w)
+        f = self.fonts.get(key)
+        if f is None:
+            px = max(9, int(round(size * self.S)))
+            for path in font_candidates(w):
+                if Path(path).exists():
+                    try:
+                        f = ImageFont.truetype(path, px)
+                        break
+                    except Exception:
+                        pass
+            if f is None:
+                f = ImageFont.load_default()
+            self.fonts[key] = f
+        return f
+
+    def text_w(self, font: ImageFont.FreeTypeFont, s: str) -> float:
+        try:
+            bb = font.getbbox(s)
+            return float(bb[2] - bb[0])
+        except Exception:
+            return float(len(s) * 7)
+
+    def _draw_rr(self, draw: ImageDraw.ImageDraw, x: float, y: float, w: float, h: float, r: float, fill=None, outline=None, lw: float = 1.0) -> None:
+        x0, y0, x1, y1 = int(round(x)), int(round(y)), int(round(x + w)), int(round(y + h))
+        rad = max(0, int(round(min(r, w * 0.5, h * 0.5))))
+        draw.rounded_rectangle((x0, y0, x1, y1), radius=rad, fill=fill, outline=outline, width=max(1, int(round(lw))))
+
+    def _bake_sprites(self) -> None:
+        """Render tiny anti-aliased reusable UI sprites once (0 allocations during interaction)."""
+        ss = 2.0
+        R = self.S * ss
+
+        def reg_sprite(name: str, im_1x: Image.Image) -> None:
+            self._pil_sprites[name] = im_1x
+            self.sprites[name] = ImageTk.PhotoImage(im_1x)
+
+        def make_rr_sprite(name: str, w_dp: float, h_dp: float, r_dp: float, fill, border=None, lw_dp: float = 1.0) -> None:
+            pw, ph = max(2, int(round(w_dp * self.S))), max(2, int(round(h_dp * self.S)))
+            im = Image.new("RGBA", (int(round(pw * ss)), int(round(ph * ss))), (0, 0, 0, 0))
+            d = ImageDraw.Draw(im)
+            d.rounded_rectangle(
+                (int(lw_dp * R * 0.5), int(lw_dp * R * 0.5), im.width - 1 - int(lw_dp * R * 0.5), im.height - 1 - int(lw_dp * R * 0.5)),
+                radius=max(1, int(round(r_dp * R))),
+                fill=fill,
+                outline=border,
+                width=max(1, int(round(lw_dp * R))),
+            )
+            reg_sprite(name, im.resize((pw, ph), Image.Resampling.LANCZOS))
+
+        def make_circle_sprite(name: str, d_dp: float, fill, ring=None, lw_dp: float = 1.5) -> None:
+            p = max(4, int(round(d_dp * self.S)))
+            im = Image.new("RGBA", (int(round(p * ss)), int(round(p * ss))), (0, 0, 0, 0))
+            d = ImageDraw.Draw(im)
+            pad = int(round(lw_dp * R * 0.5)) if ring else 0
+            d.ellipse((pad, pad, im.width - 1 - pad, im.height - 1 - pad), fill=fill, outline=ring, width=max(1, int(round(lw_dp * R))) if ring else 0)
+            reg_sprite(name, im.resize((p, p), Image.Resampling.LANCZOS))
+
+        make_rr_sprite("trk_off", 40, 22, 11, C_SWITCH_OFF + (255,), C_BORDER_CTRL, 1.0)
+        make_rr_sprite("trk_on", 40, 22, 11, C_CTA_BG + (255,), C_CTA_BG + (255,), 1.0)
+        make_circle_sprite("thm_off", 16, C_TX2 + (255,))
+        make_circle_sprite("thm_on", 16, C_CTA_FG + (255,))
+        make_circle_sprite("rad_off", 18, C_SWITCH_OFF + (255,), C_BORDER_CTRL, 1.5)
+
+        # Radio ON = ring + centered dot
+        pr = max(8, int(round(18 * self.S)))
+        rim = Image.new("RGBA", (int(round(pr * ss)), int(round(pr * ss))), (0, 0, 0, 0))
+        rd = ImageDraw.Draw(rim)
+        rd.ellipse((int(1 * R), int(1 * R), rim.width - 1 - int(1 * R), rim.height - 1 - int(1 * R)), fill=C_SWITCH_OFF + (255,), outline=C_CTA_BG + (255,), width=max(1, int(round(1.6 * R))))
+        in_p = int(round(5 * R))
+        rd.ellipse((in_p, in_p, rim.width - in_p, rim.height - in_p), fill=C_CTA_BG + (255,))
+        reg_sprite("rad_on", rim.resize((pr, pr), Image.Resampling.LANCZOS))
+
+        # Rounded CTA / Hotkey sprites matching footer/settings layout geometry
+        cw = self.W - 32.0
+        stop_w = 148.0
+        start_w = cw - stop_w - 12.0
+        make_rr_sprite("cta_start_idle", start_w, 38.0, 9.0, C_CTA_BG + (255,), C_CTA_BG + (255,), 1.0)
+        make_rr_sprite("cta_start_run", start_w, 38.0, 9.0, (91, 94, 102, 255), (91, 94, 102, 255), 1.0)
+        make_rr_sprite("cta_stop_idle", stop_w, 38.0, 9.0, (18, 20, 25, 255), (50, 54, 64, 255), 1.0)
+        make_rr_sprite("cta_stop_run", stop_w, 38.0, 9.0, C_CTRL + (255,), (120, 126, 140, 255), 1.0)
+        make_rr_sprite("bind_idle", 74.0, 30.0, 7.0, C_CTRL + (255,), (104, 110, 125, 255), 1.0)
+        make_rr_sprite("bind_cap", 74.0, 30.0, 7.0, C_CTA_BG + (255,), C_CTA_BG + (255,), 1.0)
+
+        # Rounded capsule status pills for RU & EN
+        pill_styles = {
+            "ready": (C_OK, (14, 36, 28, 255), (36, 115, 83, 255)),
+            "running": (C_RUN, (16, 30, 51, 255), (54, 101, 161, 255)),
+            "starting": (C_RUN, (16, 30, 51, 255), (54, 101, 161, 255)),
+            "stopping": (C_STOP, (43, 20, 24, 255), (152, 65, 68, 255)),
+        }
+        for lng in ("ru", "en"):
+            for st_key, (dot_c, bg_c, bd_c) in pill_styles.items():
+                st_txt = TEXT[lng][f"st_{st_key}"]
+                fn_2x = self.fnt(11.5 * ss, "md")
+                tw_dp = self.text_w(fn_2x, st_txt) / R
+                pw_dp = tw_dp + 32.0
+                ph_dp = 21.0
+                pw, ph = max(8, int(round(pw_dp * self.S))), max(8, int(round(ph_dp * self.S)))
+                pim = Image.new("RGBA", (int(round(pw * ss)), int(round(ph * ss))), (0, 0, 0, 0))
+                pd = ImageDraw.Draw(pim)
+                pd.rounded_rectangle(
+                    (int(0.5 * R), int(0.5 * R), pim.width - 1 - int(0.5 * R), pim.height - 1 - int(0.5 * R)),
+                    radius=max(2, int(round(10.5 * R))),
+                    fill=bg_c,
+                    outline=bd_c,
+                    width=max(1, int(round(1.0 * R))),
+                )
+                dx0, dy0 = int(round(8.5 * R)), int(round(7.0 * R))
+                dx1, dy1 = int(round(15.5 * R)), int(round(14.0 * R))
+                pd.ellipse((dx0, dy0, dx1, dy1), fill=dot_c + (255,))
+                pd.text((21.0 * R, ph_dp * 0.5 * R), st_txt, font=fn_2x, fill=dot_c + (255,), anchor="lm")
+                reg_sprite(f"pill_{lng}_{st_key}", pim.resize((pw, ph), Image.Resampling.LANCZOS))
+
+    # ---------------- Static Layer Cache & Dynamic Canvas Construction ----------------
+    def _gradient_bg(self, w: int, h: int) -> Image.Image:
+        t = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
+        r = (C_BG_TOP[0] + (C_BG_BOT[0] - C_BG_TOP[0]) * t).clip(0, 255).astype(np.uint8)
+        g = (C_BG_TOP[1] + (C_BG_BOT[1] - C_BG_TOP[1]) * t).clip(0, 255).astype(np.uint8)
+        b = (C_BG_TOP[2] + (C_BG_BOT[2] - C_BG_TOP[2]) * t).clip(0, 255).astype(np.uint8)
+        col = np.dstack([r, g, b])
+        arr = np.broadcast_to(col, (h, w, 3)).copy()
+        return Image.fromarray(arr, mode="RGB").convert("RGBA")
+
+    def rebuild_ui(self, snap: bool = False) -> None:
+        """Build cached obsidian base surface once for current page/accordion/language state."""
+        self.regions.clear()
+        self.cv.delete("all")
+        self._canvas_items.clear()
+        self._switch_items.clear()
+
+        lang = self.live("lang")
+        method = int(self.live("method"))
+        swing_on = bool(self.live("swing"))
+        walk_on = bool(self.live("walk"))
+
+        # Compute exact layout geometry (dp units)
+        pad = 16.0
+        cw = self.W - pad * 2
+        header_h = 56.0
+        footer_h = (124.0 if self.undo_snap is not None else 82.0)
+
+        y = header_h + 10.0
+        layout_blocks = []
+
+        if self.page == "main":
+            # Card 1: Game Methods + Optional Expanded Params
+            m_pad = 10.0
+            m_inner = cw - m_pad * 2
+            m_y = y + m_pad + 22.0  # card header title row
+            method_rects = []
+            for mval, tk_t, tk_d in (
+                (1, "m1_title", "m1_desc"),
+                (2, "m2_title", "m2_desc"),
+                (0, "m0_title", "m0_desc"),
+            ):
+                method_rects.append((mval, tk_t, tk_d, y + m_pad + (m_y - (y + m_pad)), m_inner, 44.0))
+                m_y += 44.0 + 6.0
+
+            params_btn_y = m_y + 2.0
+            params_btn_h = 34.0
+            m_y = params_btn_y + params_btn_h
+            params_box = None
+            if self.params_open:
+                p_row1_y = m_y + 6.0
+                p_row2_y = p_row1_y + 44.0 + 6.0
+                m_y = p_row2_y + 42.0
+                params_box = (p_row1_y, p_row2_y)
+
+            card1_h = (m_y - y) + m_pad
+            layout_blocks.append(("methods", y, card1_h, method_rects, params_btn_y, params_btn_h, params_box))
+            y += card1_h + 10.0
+
+            # Card 2: Anti-AFK Behavior
+            a_y = y + m_pad + 22.0
+            afk_rows = []
+            afk_defs = [
+                ("immediate", "imm_title", "imm_desc", None),
+                ("human", "human_title", "human_desc", None),
+                ("swing", "swing_title", "swing_desc", "pickaxe" if swing_on else None),
+                ("space", "space_title", "space_desc", None),
+                ("walk", "walk_title", "walk_desc", "pace" if walk_on else None),
+            ]
+            for idx, (cfg_key, t_k, d_k, sub_kind) in enumerate(afk_defs):
+                afk_rows.append((cfg_key, t_k, d_k, a_y, 40.0, sub_kind))
+                a_y += 40.0
+                if sub_kind:
+                    a_y += 30.0
+                if idx < len(afk_defs) - 1:
+                    a_y += 6.0
+            card2_h = (a_y - y) + m_pad
+            layout_blocks.append(("afk", y, card2_h, afk_rows))
+            y += card2_h + 10.0
+
+            # Card 3: Live Status & Log
+            card3_h = 72.0
+            layout_blocks.append(("status", y, card3_h))
+            y += card3_h + 10.0
+        else:
+            # Settings Page
+            c1_h = 84.0
+            layout_blocks.append(("perf", y, c1_h))
+            y += c1_h + 12.0
+
+            c2_h = 226.0
+            layout_blocks.append(("calib", y, c2_h))
+            y += c2_h + 12.0
+
+            c3_h = 86.0
+            layout_blocks.append(("about", y, c3_h))
+            y += c3_h + 14.0
+
+        footer_y = y
+        self.total_h = footer_y + footer_h
+        sh = self.root.winfo_screenheight()
+        max_dp_h = (sh - 60) / self.S
+        self.view_h = min(self.total_h, max_dp_h)
+
+        # Render static backdrop + card chrome ONCE at 2x AA -> downscale cleanly to 1x
+        ss = 2.0
+        R = self.S * ss
+        Wr = int(round(self.Wp * ss))
+        Hr = int(round(self.total_h * self.S * ss))
+        base = self._gradient_bg(Wr, Hr)
+        draw = ImageDraw.Draw(base, "RGBA")
+
+        def dr_txt(x_dp: float, y_dp: float, s: str, sz: float, wt: str, col: tuple, anchor: str = "la"):
+            fn = self.fnt(sz * ss, wt)
+            draw.text((x_dp * R, y_dp * R), s, font=fn, fill=col, anchor=anchor)
+
+        def dr_box(x_dp: float, y_dp: float, w_dp: float, h_dp: float, rad_dp: float, fill, outline=None, lw: float = 1.0):
+            x0, y0 = x_dp * R, y_dp * R
+            x1, y1 = (x_dp + w_dp) * R, (y_dp + h_dp) * R
+            draw.rounded_rectangle((x0, y0, x1, y1), radius=max(1, int(round(rad_dp * R))), fill=fill, outline=outline, width=max(1, int(round(lw * R))))
+
+        # Header subtle hairline (NO square icon box!)
+        draw.line((0, int(header_h * R), Wr, int(header_h * R)), fill=C_BORDER_SUB, width=max(1, int(R)))
+        dr_txt(pad, 13.0, APP_NAME, 15.0, "bd", C_TX)
+        title_w = self.text_w(self.fnt(15.0 * ss, "bd"), APP_NAME) / R
+        dr_txt(pad + title_w + 8.0, 15.5, APP_VERSION, 11.5, "md", C_TX3)
+        dr_txt(pad, 34.0, self.tr("sub"), 11.5, "rg", C_TX2)
+
+        # Header segmented RU/EN pill box + Settings button chrome
+        seg_x, seg_y, seg_w, seg_h = self.W - pad - 186.0, 11.0, 82.0, 34.0
+        dr_box(seg_x, seg_y, seg_w, seg_h, 9.0, C_SUNK + (255,), C_BORDER_CTRL)
+        if lang == "ru":
+            dr_box(seg_x + 3.0, seg_y + 3.0, 36.0, seg_h - 6.0, 6.0, C_CTRL_HOV + (255,), C_BORDER_ACT)
+        else:
+            dr_box(seg_x + 41.0, seg_y + 3.0, 38.0, seg_h - 6.0, 6.0, C_CTRL_HOV + (255,), C_BORDER_ACT)
+        dr_txt(seg_x + 21.0, seg_y + seg_h * 0.5, "RU", 11.5, "bd", C_TX if lang == "ru" else C_TX2, "mm")
+        dr_txt(seg_x + 60.0, seg_y + seg_h * 0.5, "EN", 11.5, "bd", C_TX if lang == "en" else C_TX2, "mm")
+
+        set_x, set_y, set_w, set_h = self.W - pad - 96.0, 11.0, 96.0, 34.0
+        dr_box(set_x, set_y, set_w, set_h, 8.0, C_CTRL + (255,), C_BORDER_CTRL)
+        set_label = self.tr("back") if self.page == "set" else self.tr("settings")
+        dr_txt(set_x + set_w * 0.5, set_y + set_h * 0.5, set_label, 12.0, "md", C_TX, "mm")
+
+        switch_placements: list[tuple[str, float, float]] = []
+        radio_placements: list[tuple[int, float, float]] = []
+        chip_placements: list[tuple[str, float, float, float, float, str, bool]] = []
+        stepper_placements: list[tuple[str, float, float, str, int]] = []
+        bind_placements: list[tuple[str, float, float]] = []
+        undo_btn_rect = None
+        main_action_rects = None
+        reset_rect = None
+
+        for blk in layout_blocks:
+            kind = blk[0]
+            if kind == "methods":
+                _, by, bh, m_rects, pbtn_y, pbtn_h, pbox = blk
+                dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
+                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_methods"), 11.0, "sb", C_TX2)
+                dr_txt(pad + cw - 12.0, by + 11.0, self.tr("hint_afk") if method == 0 else self.tr("hint_auto"), 11.0, "rg", C_TX3, "ra")
+
+                for mval, tk_t, tk_d, ry, rw, rh in m_rects:
+                    rx = pad + 10.0
+                    sel = (method == mval)
+                    dr_box(rx, ry, rw, rh, 8.0, (C_CARD_ACT if sel else C_SUNK) + (255,), C_BORDER_ACT if sel else C_BORDER_SUB)
+                    radio_placements.append((mval, rx + 12.0, ry + 13.0))
+                    dr_txt(rx + 38.0, ry + 7.5, self.tr(tk_t), 12.5, "md", C_TX)
+                    dr_txt(rx + 38.0, ry + 24.5, self.tr(tk_d), 11.0, "rg", C_TX2)
+
+                # Disclosure button: Method parameters
+                px = pad + 10.0
+                pw = cw - 20.0
+                dr_box(px, pbtn_y, pw, pbtn_h, 8.0, C_SUNK + (255,), C_BORDER_CTRL)
+                dr_txt(px + 12.0, pbtn_y + pbtn_h * 0.5, self.tr("params_title"), 12.0, "md", C_TX2, "lm")
+                fb_txt = self.tr("fb_on") if self.live("safe") else self.tr("fb_off")
+                summ = f"{self.live('min')}–{self.live('max')} {self.tr('min_word')} · {fb_txt}"
+                ptw = self.text_w(self.fnt(12.0 * ss, "md"), self.tr("params_title")) / R
+                dr_txt(px + 12.0 + ptw + 10.0, pbtn_y + pbtn_h * 0.5, summ, 11.0, "rg", C_TX3, "lm")
+                # Vector chevron
+                cx0, cy0 = (px + pw - 18.0) * R, (pbtn_y + pbtn_h * 0.5) * R
+                if self.params_open:
+                    pts = ((cx0 - 4 * R, cy0 + 2 * R), (cx0, cy0 - 2.5 * R), (cx0 + 4 * R, cy0 + 2 * R))
+                else:
+                    pts = ((cx0 - 4 * R, cy0 - 2 * R), (cx0, cy0 + 2.5 * R), (cx0 + 4 * R, cy0 - 2 * R))
+                draw.line(pts, fill=C_TX2, width=max(1, int(round(1.6 * R))), joint="curve")
+
+                if pbox is not None:
+                    r1y, r2y = pbox
+                    dr_box(px, r1y, pw, 44.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                    dr_txt(px + 12.0, r1y + 7.5, self.tr("delay_title"), 12.0, "md", C_TX)
+                    dr_txt(px + 12.0, r1y + 24.0, self.tr("delay_desc"), 11.0, "rg", C_TX2)
+                    # Two steppers for min & max
+                    s2_x = px + pw - 12.0 - 94.0
+                    s1_x = s2_x - 16.0 - 94.0
+                    dr_txt(s1_x + 102.0, r1y + 22.0, "–", 12.0, "md", C_TX3, "mm")
+                    for skey, sx, sv in (("min", s1_x, int(self.live("min"))), ("max", s2_x, int(self.live("max")))):
+                        dr_box(sx, r1y + 7.0, 94.0, 30.0, 7.0, C_CTRL + (255,), C_BORDER_CTRL)
+                        dr_txt(sx + 15.0, r1y + 22.0, "−", 13.0, "bd", C_TX, "mm")
+                        dr_txt(sx + 79.0, r1y + 22.0, "+", 13.0, "bd", C_TX, "mm")
+                        stepper_placements.append((skey, sx, r1y + 7.0, skey, sv))
+
+                    dr_box(px, r2y, pw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                    dr_txt(px + 12.0, r2y + 7.0, self.tr("safe_title"), 12.0, "md", C_TX)
+                    dr_txt(px + 12.0, r2y + 23.0, self.tr("safe_desc"), 11.0, "rg", C_TX2)
+                    switch_placements.append(("safe", px + pw - 52.0, r2y + 10.0))
+
+            elif kind == "afk":
+                _, by, bh, rows = blk
+                dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
+                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_afk"), 11.0, "sb", C_TX2)
+                dr_txt(pad + cw - 12.0, by + 11.0, self.tr("afk_safety"), 11.0, "rg", C_TX3, "ra")
+                rx = pad + 10.0
+                rw = cw - 20.0
+                for cfg_k, t_k, d_k, ry, rh, sub in rows:
+                    dr_box(rx, ry, rw, rh, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                    dr_txt(rx + 12.0, ry + 6.5, self.tr(t_k), 12.0, "md", C_TX)
+                    dr_txt(rx + 12.0, ry + 22.0, self.tr(d_k), 11.0, "rg", C_TX2)
+                    switch_placements.append((cfg_k, rx + rw - 52.0, ry + 9.0))
+                    if sub == "pickaxe":
+                        sy = ry + rh + 4.0
+                        draw.line((int((rx + 14.0) * R), int((sy + 2.0) * R), int((rx + 14.0) * R), int((sy + 22.0) * R)), fill=C_BORDER_CTRL, width=max(1, int(round(1.5 * R))))
+                        dr_txt(rx + 26.0, sy + 12.0, self.tr("lmb_mode"), 11.0, "rg", C_TX2, "lm")
+                        is_hold = bool(self.live("mouse"))
+                        w_a, w_b = 128.0, 108.0
+                        bx_b = rx + rw - w_b
+                        bx_a = bx_b - 8.0 - w_a
+                        chip_placements.append(("lmb_swing", bx_a, sy, w_a, 24.0, self.tr("lmb_swings"), not is_hold))
+                        chip_placements.append(("lmb_hold", bx_b, sy, w_b, 24.0, self.tr("lmb_hold"), is_hold))
+                    elif sub == "pace":
+                        sy = ry + rh + 4.0
+                        draw.line((int((rx + 14.0) * R), int((sy + 2.0) * R), int((rx + 14.0) * R), int((sy + 22.0) * R)), fill=C_BORDER_CTRL, width=max(1, int(round(1.5 * R))))
+                        dr_txt(rx + 26.0, sy + 12.0, self.tr("pace_label"), 11.0, "rg", C_TX2, "lm")
+                        is_st = bool(self.live("stand"))
+                        w_a, w_b = 114.0, 104.0
+                        bx_b = rx + rw - w_b
+                        bx_a = bx_b - 8.0 - w_a
+                        chip_placements.append(("pace_norm", bx_a, sy, w_a, 24.0, self.tr("pace_norm"), not is_st))
+                        chip_placements.append(("pace_stand", bx_b, sy, w_b, 24.0, self.tr("pace_stand"), is_st))
+
+            elif kind == "status":
+                _, by, bh = blk
+                dr_box(pad, by, cw, bh, 13.0, C_SUNK + (255,), C_BORDER_SUB)
+                draw.line((int((pad + 12.0) * R), int((by + 36.0) * R), int((pad + cw - 12.0) * R), int((by + 36.0) * R)), fill=C_BORDER_SUB, width=max(1, int(R)))
+
+            elif kind == "perf":
+                _, by, bh = blk
+                dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
+                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_perf"), 11.0, "sb", C_TX2)
+                dr_txt(pad + cw - 12.0, by + 11.0, self.tr("perf_note"), 11.0, "rg", C_TX3, "ra")
+                rx, rw, ry = pad + 10.0, cw - 20.0, by + 31.0
+                dr_box(rx, ry, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, ry + 6.5, self.tr("anim_title"), 12.0, "md", C_TX)
+                dr_txt(rx + 12.0, ry + 22.0, self.tr("anim_desc"), 11.0, "rg", C_TX2)
+                anim_on = bool(self.live("anim"))
+                chip_placements.append(("anim_off", rx + rw - 96.0, ry + 8.0, 86.0, 26.0, self.tr("anim_off"), not anim_on))
+                chip_placements.append(("anim_on", rx + rw - 96.0 - 8.0 - 122.0, ry + 8.0, 122.0, 26.0, self.tr("anim_on"), anim_on))
+
+            elif kind == "calib":
+                _, by, bh = blk
+                dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
+                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_input"), 11.0, "sb", C_TX2)
+                rx, rw = pad + 10.0, cw - 20.0
+
+                r1y = by + 31.0
+                dr_box(rx, r1y, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, r1y + 6.5, self.tr("turn_title"), 12.0, "md", C_TX)
+                dr_txt(rx + 12.0, r1y + 22.0, self.tr("turn_desc"), 11.0, "rg", C_TX2)
+                sx = rx + rw - 110.0
+                dr_box(sx, r1y + 6.0, 100.0, 30.0, 7.0, C_CTRL + (255,), C_BORDER_CTRL)
+                dr_txt(sx + 16.0, r1y + 21.0, "−", 13.0, "bd", C_TX, "mm")
+                dr_txt(sx + 84.0, r1y + 21.0, "+", 13.0, "bd", C_TX, "mm")
+                stepper_placements.append(("turn_px", sx, r1y + 6.0, "turn_px", int(self.live("turn_px"))))
+
+                r2y = r1y + 48.0
+                dr_box(rx, r2y, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, r2y + 6.5, self.tr("hk_start"), 12.0, "md", C_TX)
+                dr_txt(rx + 12.0, r2y + 22.0, self.tr("hk_start_desc"), 11.0, "rg", C_TX2)
+                bind_placements.append(("start", rx + rw - 84.0, r2y + 6.0))
+
+                r3y = r2y + 48.0
+                dr_box(rx, r3y, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, r3y + 6.5, self.tr("hk_stop"), 12.0, "md", C_TX)
+                dr_txt(rx + 12.0, r3y + 22.0, self.tr("hk_stop_desc"), 11.0, "rg", C_TX2)
+                bind_placements.append(("stop", rx + rw - 84.0, r3y + 6.0))
+
+                r4y = r3y + 48.0
+                dr_box(rx, r4y, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, r4y + 6.5, self.tr("any_title"), 12.0, "md", C_TX)
+                dr_txt(rx + 12.0, r4y + 22.0, self.tr("any_desc"), 11.0, "rg", C_TX2)
+                switch_placements.append(("any_win", rx + rw - 52.0, r4y + 10.0))
+
+            elif kind == "about":
+                _, by, bh = blk
+                dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
+                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_about"), 11.0, "sb", C_TX2)
+                rx, rw, ry = pad + 10.0, cw - 20.0, by + 31.0
+                dr_box(rx, ry, rw, 44.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, ry + 7.0, self.tr("about_title"), 12.0, "md", C_TX)
+                dr_txt(rx + 12.0, ry + 23.0, self.tr("about_desc"), 10.5, "rg", C_TX2)
+
+        # Draw chip choices directly on static base
+        for cid, cx, cy, ch_w, ch_h, label, pressed in chip_placements:
+            dr_box(cx, cy, ch_w, ch_h, 6.0, (C_CTRL_HOV if pressed else C_SUNK) + (255,), C_BORDER_ACT if pressed else C_BORDER_CTRL)
+            dr_txt(cx + ch_w * 0.5, cy + ch_h * 0.5, label, 11.0, "md", C_TX if pressed else C_TX2, "mm")
+
+        # Footer action strip
+        draw.rectangle((0, int(footer_y * R), Wr, Hr), fill=C_FOOTER_BG + (255,))
+        draw.line((0, int(footer_y * R), Wr, int(footer_y * R)), fill=C_BORDER_SUB, width=max(1, int(R)))
+
+        act_y = footer_y + 10.0
+        if self.undo_snap is not None:
+            dr_box(pad, act_y, cw, 34.0, 8.0, C_CARD + (255,), C_BORDER_CTRL)
+            dr_txt(pad + 12.0, act_y + 17.0, self.tr("undo_msg"), 11.5, "rg", C_TX, "lm")
+            ux, uw = pad + cw - 92.0, 82.0
+            dr_box(ux, act_y + 5.0, uw, 24.0, 6.0, C_CTRL + (255,), C_BORDER_CTRL)
+            dr_txt(ux + uw * 0.5, act_y + 17.0, self.tr("undo_btn"), 11.0, "sb", C_TX, "mm")
+            undo_btn_rect = (ux, act_y + 5.0, uw, 24.0)
+            act_y += 42.0
+
+        stop_w = 148.0
+        start_w = cw - stop_w - 12.0
+        main_action_rects = (pad, act_y, start_w, 38.0, pad + start_w + 12.0, act_y, stop_w, 38.0)
+
+        meta_y = act_y + 46.0
+        rlab = self.tr("btn_reset")
+        rw_px = self.text_w(self.fnt(11.5 * ss, "md"), rlab) / R
+        dr_txt(pad, meta_y + 7.0, rlab, 11.5, "md", C_TX2, "lm")
+        draw.line((int(pad * R), int((meta_y + 15.0) * R), int((pad + rw_px) * R), int((meta_y + 15.0) * R)), fill=C_BORDER_CTRL, width=max(1, int(R)))
+        reset_rect = (pad - 4.0, meta_y - 4.0, rw_px + 8.0, 22.0)
+
+        adm_txt = self.tr("admin_ok") if is_admin() else self.tr("admin_no")
+        dr_txt(pad + cw, meta_y + 7.0, adm_txt, 11.0, "rg", C_TX3, "rm")
+
+        base_1x = base.resize((self.Wp, int(round(self.total_h * self.S))), Image.Resampling.LANCZOS)
+        if HEADLESS:
+            self.last_headless_img = base_1x.copy()
+        self._bg_photo = ImageTk.PhotoImage(base_1x)
+        self._bg_item = self.cv.create_image(0, 0, anchor="nw", image=self._bg_photo)
+
+        # Register static clickable regions
+        self.regions.append(("lang_ru", seg_x + 2, seg_y, seg_x + 40, seg_y + seg_h, lambda: self.set_lang("ru")))
+        self.regions.append(("lang_en", seg_x + 40, seg_y, seg_x + seg_w, seg_y + seg_h, lambda: self.set_lang("en")))
+        self.regions.append(("nav_set", set_x, set_y, set_x + set_w, set_y + set_h, self.toggle_page))
+        if undo_btn_rect:
+            ux, uy, uw, uh = undo_btn_rect
+            self.regions.append(("undo", ux, uy, ux + uw, uy + uh, self.undo_reset))
+        rx0, ry0, rw0, rh0 = reset_rect
+        self.regions.append(("reset", rx0, ry0, rx0 + rw0, ry0 + rh0, self.reset_all))
+
+        for blk in layout_blocks:
+            if blk[0] == "methods":
+                _, _, _, m_rects, pbtn_y, pbtn_h, pbox = blk
+                for mval, _, _, ry, rw, rh in m_rects:
+                    self.regions.append((f"m_{mval}", pad + 10.0, ry, pad + 10.0 + rw, ry + rh, lambda mv=mval: self.select_method(mv)))
+                self.regions.append(("params_btn", pad + 10.0, pbtn_y, pad + cw - 10.0, pbtn_y + pbtn_h, self.toggle_params))
+                if pbox is not None:
+                    self.regions.append(("sw_safe", pad + 10.0, pbox[1], pad + cw - 10.0, pbox[1] + 42.0, lambda: self.flip("safe")))
+            elif blk[0] == "afk":
+                for cfg_k, _, _, ry, rh, _ in blk[3]:
+                    self.regions.append((f"sw_{cfg_k}", pad + 10.0, ry, pad + cw - 10.0, ry + rh, lambda k=cfg_k: self.flip(k)))
+            elif blk[0] == "status":
+                self._status_y = blk[1]
+            elif blk[0] == "calib":
+                _, by, _ = blk
+                self.regions.append(("sw_any_win", pad + 10.0, by + 31.0 + 144.0, pad + cw - 10.0, by + 31.0 + 186.0, lambda: self.flip("any_win")))
+
+        for cid, cx, cy, ch_w, ch_h, _, _ in chip_placements:
+            if cid == "lmb_swing":
+                self.regions.append((cid, cx, cy, cx + ch_w, cy + ch_h, lambda: self.set_bool("mouse", False)))
+            elif cid == "lmb_hold":
+                self.regions.append((cid, cx, cy, cx + ch_w, cy + ch_h, lambda: self.set_bool("mouse", True)))
+            elif cid == "pace_norm":
+                self.regions.append((cid, cx, cy, cx + ch_w, cy + ch_h, lambda: self.set_bool("stand", False)))
+            elif cid == "pace_stand":
+                self.regions.append((cid, cx, cy, cx + ch_w, cy + ch_h, lambda: self.set_bool("stand", True)))
+            elif cid == "anim_on":
+                self.regions.append((cid, cx, cy, cx + ch_w, cy + ch_h, lambda: self.set_bool("anim", True)))
+            elif cid == "anim_off":
+                self.regions.append((cid, cx, cy, cx + ch_w, cy + ch_h, lambda: self.set_bool("anim", False)))
+
+        # Dynamic canvas sprite overlays (switches, radios, steppers, binds, status, CTA buttons)
+        for mval, rx, ry in radio_placements:
+            sp = self.sprites["rad_on"] if method == mval else self.sprites["rad_off"]
+            self.cv.create_image(int(round(rx * self.S)), int(round(ry * self.S)), anchor="nw", image=sp)
+
+        for skey, sx, sy in switch_placements:
+            on = bool(self.live(skey))
+            trk_id = self.cv.create_image(int(round(sx * self.S)), int(round(sy * self.S)), anchor="nw", image=self.sprites["trk_on" if on else "trk_off"])
+            tx_off = sx + 3.0
+            tx_on = sx + 21.0
+            tx = tx_on if on else tx_off
+            thm_id = self.cv.create_image(int(round(tx * self.S)), int(round((sy + 3.0) * self.S)), anchor="nw", image=self.sprites["thm_on" if on else "thm_off"])
+            self._switch_items[skey] = (trk_id, thm_id, tx_off, tx_on)
+            if skey in self.anim_jobs:
+                del self.anim_jobs[skey]
+
+        for skey, sx, sy, _, sval in stepper_placements:
+            w_st = 100.0 if skey == "turn_px" else 94.0
+            dec_cb = (lambda s=-100: self.bump_turn(s)) if skey == "turn_px" else (lambda k=skey: self.bump_delay(k, -1))
+            inc_cb = (lambda s=100: self.bump_turn(s)) if skey == "turn_px" else (lambda k=skey: self.bump_delay(k, 1))
+            self.regions.append((f"st_dec_{skey}", sx, sy, sx + 30.0, sy + 30.0, dec_cb))
+            self.regions.append((f"st_inc_{skey}", sx + w_st - 30.0, sy, sx + w_st, sy + 30.0, inc_cb))
+            self._canvas_items[f"val_{skey}"] = self.cv.create_text(
+                int(round((sx + w_st * 0.5) * self.S)),
+                int(round((sy + 15.0) * self.S)),
+                text=str(sval),
+                fill=hexc(C_TX),
+                font=("Consolas", -max(10, int(round(12.5 * self.S))), "bold"),
+            )
+
+        for which, bx, by in bind_placements:
+            self.regions.append((f"bind_{which}", bx, by, bx + 74.0, by + 30.0, lambda w_=which: self.begin_capture(w_)))
+            self._canvas_items[f"bind_bg_{which}"] = self.cv.create_image(
+                int(round(bx * self.S)), int(round(by * self.S)),
+                anchor="nw", image=self.sprites["bind_idle"],
+            )
+            self._canvas_items[f"bind_tx_{which}"] = self.cv.create_text(
+                int(round((bx + 37.0) * self.S)), int(round((by + 15.0) * self.S)),
+                text="", fill=hexc(C_TX),
+                font=("Consolas", -max(10, int(round(12.0 * self.S))), "bold"),
+            )
+
+        if self.page == "main":
+            sy = self._status_y
+            self._canvas_items["st_pill"] = self.cv.create_image(
+                int(round((pad + 12.0) * self.S)), int(round((sy + 8.0) * self.S)),
+                anchor="nw", image=self.sprites[f"pill_{lang}_ready"],
+            )
+            self._canvas_items["st_detail"] = self.cv.create_text(
+                int(round((pad + cw - 12.0) * self.S)), int(round((sy + 18.5) * self.S)),
+                anchor="e", text="", fill=hexc(C_TX2),
+                font=("Inter", -max(10, int(round(11.5 * self.S)))),
+            )
+            self._canvas_items["log_0"] = self.cv.create_text(
+                int(round((pad + 12.0) * self.S)), int(round((sy + 48.0) * self.S)),
+                anchor="w", text="", fill=hexc(C_TX2),
+                font=("Consolas", -max(9, int(round(11.0 * self.S)))),
+            )
+            self._canvas_items["log_1"] = self.cv.create_text(
+                int(round((pad + 12.0) * self.S)), int(round((sy + 61.5) * self.S)),
+                anchor="w", text="", fill=hexc(C_TX3),
+                font=("Consolas", -max(9, int(round(11.0 * self.S)))),
+            )
+
+        # Primary Start / Stop CTA items (crisp rounded sprites, updated without rebuild)
+        sx0, sy0, sw0, sh0, px0, py0, pw0, ph0 = main_action_rects
+        self._footer_btn_rects = main_action_rects
+        self._canvas_items["cta_start_bg"] = self.cv.create_image(
+            int(round(sx0 * self.S)), int(round(sy0 * self.S)),
+            anchor="nw", image=self.sprites["cta_start_idle"],
+        )
+        self._canvas_items["cta_start_tx"] = self.cv.create_text(
+            int(round((sx0 + sw0 * 0.5) * self.S)), int(round((sy0 + sh0 * 0.5) * self.S)),
+            text="", font=("Inter SemiBold", -max(11, int(round(13.0 * self.S)))),
+        )
+        self._canvas_items["cta_stop_bg"] = self.cv.create_image(
+            int(round(px0 * self.S)), int(round(py0 * self.S)),
+            anchor="nw", image=self.sprites["cta_stop_idle"],
+        )
+        self._canvas_items["cta_stop_tx"] = self.cv.create_text(
+            int(round((px0 + pw0 * 0.5) * self.S)), int(round((py0 + ph0 * 0.5) * self.S)),
+            text="", font=("Inter Medium", -max(11, int(round(13.0 * self.S)))),
+        )
+        self.regions.append(("cta_start", sx0, sy0, sx0 + sw0, sy0 + sh0, self.start))
+        self.regions.append(("cta_stop", px0, py0, px0 + pw0, py0 + ph0, self.stop))
+
+        self._headless_meta = {
+            "base": base_1x.copy(),
+            "radios": list(radio_placements),
+            "switches": list(switch_placements),
+            "steppers": list(stepper_placements),
+            "binds": list(bind_placements),
+            "cta": main_action_rects,
+            "status_y": getattr(self, "_status_y", 0.0),
+            "method": method,
+            "page": self.page,
+        }
+
+        # Configure scroll region & set window geometry ONCE per structural rebuild
+        self.cv.configure(
+            width=self.Wp,
+            height=int(round(self.view_h * self.S)),
+            scrollregion=(0, 0, self.Wp, int(round(self.total_h * self.S))),
+        )
+        self.scroll_y = clamp(self.scroll_y, 0.0, max(0.0, self.total_h - self.view_h))
+        if self.total_h > 0:
+            self.cv.yview_moveto(self.scroll_y / self.total_h)
+        if not HEADLESS:
+            cur_geo = self.root.geometry()
+            parts = cur_geo.split("+")
+            wh = int(round(self.view_h * self.S))
+            if len(parts) == 3:
+                self.root.geometry(f"{self.Wp}x{wh}+{parts[1]}+{parts[2]}")
+            else:
+                self.root.geometry(f"{self.Wp}x{wh}")
+
+        self.refresh_dynamic_items()
+
+    def refresh_dynamic_items(self) -> None:
+        """Update dynamic labels/status/buttons/steppers instantaneously (no PIL rebuild)."""
+        lang = self.live("lang")
+        for skey in ("min", "max", "turn_px"):
+            iid = self._canvas_items.get(f"val_{skey}")
+            if iid:
+                self.cv.itemconfigure(iid, text=str(self.live(skey)))
+
+        for which in ("start", "stop"):
+            bg_id = self._canvas_items.get(f"bind_bg_{which}")
+            tx_id = self._canvas_items.get(f"bind_tx_{which}")
+            if bg_id and tx_id:
+                listening = (self.capturing == which)
+                key_lbl = self.tr("hk_press") if listening else str(self.live(f"{which}_key")).upper()
+                self.cv.itemconfigure(bg_id, image=self.sprites["bind_cap" if listening else "bind_idle"])
+                self.cv.itemconfigure(tx_id, text=key_lbl, fill=hexc(C_CTA_FG if listening else C_TX))
+
+        if self.page == "main" and "st_pill" in self._canvas_items:
+            st = self.state if self.state in ("ready", "running", "starting", "stopping") else "ready"
+            self.cv.itemconfigure(self._canvas_items["st_pill"], image=self.sprites[f"pill_{lang}_{st}"])
+
+            det = self.ref(self.detail_ref)
+            if isinstance(self.detail_ref, dict) and self.detail_ref.get("key") == "dt_idle":
+                det = f"{det} {str(self.live('start_key')).upper()}"
+            self.cv.itemconfigure(self._canvas_items["st_detail"], text=det)
+
+            logs = list(self.log)
+            l0 = f"{logs[-1][0]}  {logs[-1][1]}" if len(logs) >= 1 else ""
+            l1 = f"{logs[-2][0]}  {logs[-2][1]}" if len(logs) >= 2 else ""
+            self.cv.itemconfigure(self._canvas_items["log_0"], text=l0)
+            self.cv.itemconfigure(self._canvas_items["log_1"], text=l1)
+
+        if "cta_start_bg" in self._canvas_items:
+            sk = str(self.live("start_key")).upper()
+            tk_stop = str(self.live("stop_key")).upper()
+            if self.running:
+                self.cv.itemconfigure(self._canvas_items["cta_start_bg"], image=self.sprites["cta_start_run"])
+                self.cv.itemconfigure(self._canvas_items["cta_start_tx"], text=f"{self.tr('btn_running')}  [{sk}]", fill="#121419")
+                self.cv.itemconfigure(self._canvas_items["cta_stop_bg"], image=self.sprites["cta_stop_run"])
+                self.cv.itemconfigure(self._canvas_items["cta_stop_tx"], text=f"{self.tr('btn_stop')}  [{tk_stop}]", fill=hexc(C_TX))
+            else:
+                self.cv.itemconfigure(self._canvas_items["cta_start_bg"], image=self.sprites["cta_start_idle"])
+                self.cv.itemconfigure(self._canvas_items["cta_start_tx"], text=f"{self.tr('btn_start')}  [{sk}]", fill=hexc(C_CTA_FG))
+                self.cv.itemconfigure(self._canvas_items["cta_stop_bg"], image=self.sprites["cta_stop_idle"])
+                self.cv.itemconfigure(self._canvas_items["cta_stop_tx"], text=f"{self.tr('btn_stop')}  [{tk_stop}]", fill="#666C7A")
+
+        if HEADLESS:
+            self.last_headless_img = self.render_headless_preview()
+
+    def render_headless_preview(self) -> Image.Image | None:
+        """Composite complete UI (sprites + dynamic text/status/CTAs) into one clean PNG Image."""
+        meta = self._headless_meta
+        if not meta or "base" not in meta:
+            return self.last_headless_img
+        out = meta["base"].copy()
+        d = ImageDraw.Draw(out, "RGBA")
+        S = self.S
+        lang = self.live("lang")
+        method = int(meta["method"])
+
+        def paste_sp(name: str, x_dp: float, y_dp: float) -> None:
+            sp = self._pil_sprites.get(name)
+            if sp is not None:
+                out.alpha_composite(sp, (int(round(x_dp * S)), int(round(y_dp * S))))
+
+        for mval, rx, ry in meta["radios"]:
+            paste_sp("rad_on" if method == mval else "rad_off", rx, ry)
+
+        for skey, sx, sy in meta["switches"]:
+            on = bool(self.live(skey))
+            paste_sp("trk_on" if on else "trk_off", sx, sy)
+            paste_sp("thm_on" if on else "thm_off", sx + (21.0 if on else 3.0), sy + 3.0)
+
+        for skey, sx, sy, _, _ in meta["steppers"]:
+            w_st = 100.0 if skey == "turn_px" else 94.0
+            fn = self.fnt(12.5, "bd")
+            d.text(((sx + w_st * 0.5) * S, (sy + 15.0) * S), str(self.live(skey)), font=fn, fill=C_TX + (255,), anchor="mm")
+
+        for which, bx, by in meta["binds"]:
+            listening = (self.capturing == which)
+            paste_sp("bind_cap" if listening else "bind_idle", bx, by)
+            key_lbl = self.tr("hk_press") if listening else str(self.live(f"{which}_key")).upper()
+            d.text(((bx + 37.0) * S, (by + 15.0) * S), key_lbl, font=self.fnt(12.0, "bd"), fill=(C_CTA_FG if listening else C_TX) + (255,), anchor="mm")
+
+        if meta["page"] == "main":
+            pad = 16.0
+            cw = self.W - pad * 2
+            sy = meta["status_y"]
+            st = self.state if self.state in ("ready", "running", "starting", "stopping") else "ready"
+            paste_sp(f"pill_{lang}_{st}", pad + 12.0, sy + 8.0)
+
+            det = self.ref(self.detail_ref)
+            if isinstance(self.detail_ref, dict) and self.detail_ref.get("key") == "dt_idle":
+                det = f"{det} {str(self.live('start_key')).upper()}"
+            d.text(((pad + cw - 12.0) * S, (sy + 18.5) * S), det, font=self.fnt(11.5, "rg"), fill=C_TX2 + (255,), anchor="rm")
+
+            logs = list(self.log)
+            if len(logs) >= 1:
+                d.text(((pad + 12.0) * S, (sy + 48.0) * S), f"{logs[-1][0]}  {logs[-1][1]}", font=self.fnt(11.0, "rg"), fill=C_TX2 + (255,), anchor="lm")
+            if len(logs) >= 2:
+                d.text(((pad + 12.0) * S, (sy + 61.5) * S), f"{logs[-2][0]}  {logs[-2][1]}", font=self.fnt(11.0, "rg"), fill=C_TX3 + (255,), anchor="lm")
+
+        sx0, sy0, sw0, sh0, px0, py0, pw0, ph0 = meta["cta"]
+        sk = str(self.live("start_key")).upper()
+        tk_stop = str(self.live("stop_key")).upper()
+        if self.running:
+            paste_sp("cta_start_run", sx0, sy0)
+            paste_sp("cta_stop_run", px0, py0)
+            d.text(((sx0 + sw0 * 0.5) * S, (sy0 + sh0 * 0.5) * S), f"{self.tr('btn_running')}  [{sk}]", font=self.fnt(13.0, "sb"), fill=(18, 20, 25, 255), anchor="mm")
+            d.text(((px0 + pw0 * 0.5) * S, (py0 + ph0 * 0.5) * S), f"{self.tr('btn_stop')}  [{tk_stop}]", font=self.fnt(13.0, "md"), fill=C_TX + (255,), anchor="mm")
+        else:
+            paste_sp("cta_start_idle", sx0, sy0)
+            paste_sp("cta_stop_idle", px0, py0)
+            d.text(((sx0 + sw0 * 0.5) * S, (sy0 + sh0 * 0.5) * S), f"{self.tr('btn_start')}  [{sk}]", font=self.fnt(13.0, "sb"), fill=C_CTA_FG + (255,), anchor="mm")
+            d.text(((px0 + pw0 * 0.5) * S, (py0 + ph0 * 0.5) * S), f"{self.tr('btn_stop')}  [{tk_stop}]", font=self.fnt(13.0, "md"), fill=(102, 108, 122, 255), anchor="mm")
+        return out
+
+    # ---------------- Smooth 150ms Toggle Sprite Tweens (0% Idle CPU) ----------------
+    def animate_switch(self, skey: str, target_on: bool) -> None:
+        item = self._switch_items.get(skey)
+        if not item:
+            return
+        trk_id, thm_id, tx_off, tx_on = item
+        if not self.live("anim"):
+            self.cv.itemconfigure(trk_id, image=self.sprites["trk_on" if target_on else "trk_off"])
+            self.cv.itemconfigure(thm_id, image=self.sprites["thm_on" if target_on else "thm_off"])
+            x = tx_on if target_on else tx_off
+            y = self.cv.coords(thm_id)[1]
+            self.cv.coords(thm_id, int(round(x * self.S)), int(round(y)))
+            return
+        cur_x_dp = self.cv.coords(thm_id)[0] / self.S
+        self.anim_jobs[skey] = {
+            "t0": time.monotonic(),
+            "dur": 0.15,
+            "x0": cur_x_dp,
+            "x1": tx_on if target_on else tx_off,
+            "on": target_on,
+        }
+        if not self.anim_running:
+            self.anim_running = True
+            self.root.after(16, self._step_anims)
+
+    def _step_anims(self) -> None:
+        if not self.anim_jobs:
+            self.anim_running = False
+            return
+        now = time.monotonic()
+        done = []
+        for skey, job in list(self.anim_jobs.items()):
+            item = self._switch_items.get(skey)
+            if not item:
+                done.append(skey)
+                continue
+            trk_id, thm_id, _, _ = item
+            p = clamp((now - job["t0"]) / job["dur"], 0.0, 1.0)
+            ease = 1.0 - (1.0 - p) ** 3
+            nx = job["x0"] + (job["x1"] - job["x0"]) * ease
+            y = self.cv.coords(thm_id)[1]
+            self.cv.coords(thm_id, int(round(nx * self.S)), int(round(y)))
+            crossed = (p >= 0.45 and job["on"]) or (p < 0.45 and not job["on"])
+            self.cv.itemconfigure(trk_id, image=self.sprites["trk_on" if crossed else "trk_off"])
+            self.cv.itemconfigure(thm_id, image=self.sprites["thm_on" if crossed else "thm_off"])
+            if p >= 1.0:
+                done.append(skey)
+        for k in done:
+            self.anim_jobs.pop(k, None)
+        if self.anim_jobs:
+            self.root.after(16, self._step_anims)
+        else:
+            self.anim_running = False
+
+    # ---------------- Interactions & Event Handlers ----------------
+    def _hit(self, x_ev: float, y_ev: float):
+        px = x_ev / self.S
+        py = y_ev / self.S + self.scroll_y
+        for r in reversed(self.regions):
+            if r[1] <= px <= r[3] and r[2] <= py <= r[4]:
+                return r
+        return None
+
+    def on_move(self, e) -> None:
+        r = self._hit(e.x, e.y)
+        rid = r[0] if r else None
+        if rid != self.hover_id:
+            self.hover_id = rid
+            self.cv.configure(cursor="hand2" if rid else "")
+
+    def on_leave(self, _e=None) -> None:
+        self.hover_id = None
+        self.cv.configure(cursor="")
+
+    def on_click(self, e) -> None:
+        r = self._hit(e.x, e.y)
+        if r and callable(r[5]):
+            r[5]()
+
+    def on_wheel(self, e) -> None:
+        if self.total_h <= self.view_h:
+            return
+        step = -1 * (e.delta / 120.0) * 32.0
+        self.scroll_y = clamp(self.scroll_y + step, 0.0, max(0.0, self.total_h - self.view_h))
+        self.cv.yview_moveto(self.scroll_y / self.total_h)
+
+    def _clear_undo(self) -> bool:
+        if self.undo_snap is not None:
+            self.undo_snap = None
+            return True
+        return False
+
+    def set_lang(self, lang: str) -> None:
+        if self.live("lang") == lang:
+            return
+        self.set_cfg("lang", lang)
+        self.save()
+        self.rebuild_ui()
+
+    def toggle_page(self) -> None:
+        if self.capturing:
+            self.end_capture()
+        self.page = "set" if self.page == "main" else "main"
+        self.scroll_y = 0.0
+        self.rebuild_ui()
+
+    def toggle_params(self) -> None:
+        self.params_open = not self.params_open
+        self.rebuild_ui()
+
+    def select_method(self, m: int) -> None:
+        if self.running:
+            return
+        self._clear_undo()
+        self.set_cfg("method", m)
+        self.save()
+        self.rebuild_ui()
+
+    def flip(self, key: str) -> None:
+        undo_was = self._clear_undo()
+        new_val = not bool(self.live(key))
+        self.set_cfg(key, new_val)
+        self.save()
+        if key in ("swing", "walk", "safe") or undo_was:
+            self.rebuild_ui()
+        else:
+            self.animate_switch(key, new_val)
+            self.refresh_dynamic_items()
+
+    def set_bool(self, key: str, val: bool) -> None:
+        self._clear_undo()
+        self.set_cfg(key, val)
+        self.save()
+        self.rebuild_ui()
+
+    def bump_delay(self, which: str, delta: int) -> None:
+        self._clear_undo()
+        lo = int(self.live("min"))
+        hi = int(self.live("max"))
+        if which == "min":
+            lo = int(clamp(lo + delta, 1, 180))
+            hi = max(hi, lo)
+        else:
+            hi = int(clamp(hi + delta, lo, 180))
+        self.set_cfg("min", lo)
+        self.set_cfg("max", hi)
+        self.save()
+        self.rebuild_ui()
+
+    def bump_turn(self, delta: int) -> None:
+        undo_was = self._clear_undo()
+        nv = int(clamp(int(self.live("turn_px")) + delta, 200, 20000))
+        self.set_cfg("turn_px", nv)
+        self.save()
+        if undo_was:
+            self.rebuild_ui()
+        else:
+            self.refresh_dynamic_items()
+
+    def reset_all(self) -> None:
+        if self.running:
+            return
+        with self._state_lock:
+            self.undo_snap = dict(self.cfg)
+            cur_lang = self.cfg["lang"]
+            self.cfg = dict(DEFAULTS)
+            self.cfg["lang"] = cur_lang
+        self.save()
+        self.bind_hotkeys()
+        self.add_log(self.tr("undo_msg"))
+        self.rebuild_ui()
+
+    def undo_reset(self) -> None:
+        if self.undo_snap is None:
+            return
+        with self._state_lock:
+            self.cfg = dict(self.undo_snap)
+            self.undo_snap = None
+        self.save()
+        self.bind_hotkeys()
+        self.add_log(self.tr("undo_done"))
+        self.rebuild_ui()
+
+    # ---------------- Layout-Independent Hotkeys ----------------
+    def bind_hotkeys(self) -> None:
+        if not keyboard:
+            return
+        for h in self.hotkeys:
+            try:
+                keyboard.remove_hotkey(h)
+            except Exception:
+                pass
+        self.hotkeys.clear()
+        try:
+            sk = str(self.live("start_key"))
+            ek = str(self.live("stop_key"))
+            self.hotkeys.append(keyboard.add_hotkey(sk, lambda: self.emit("cmd", "start")))
+            self.hotkeys.append(keyboard.add_hotkey(ek, lambda: self.emit("cmd", "stop")))
+        except Exception:
+            pass
+
+    def begin_capture(self, which: str) -> None:
+        self.capturing = which
+        # Disable global keyboard hooks during rebind so pressing existing key doesn't fire Start/Stop
+        if keyboard:
+            for h in self.hotkeys:
+                try:
+                    keyboard.remove_hotkey(h)
+                except Exception:
+                    pass
+            self.hotkeys.clear()
+        self.root.bind("<Key>", self.on_key)
+        self.root.bind("<FocusOut>", lambda _e: self.end_capture() if self.capturing else None)
+        self.root.focus_set()
+        self.refresh_dynamic_items()
+
+    def end_capture(self) -> None:
+        self.capturing = None
+        try:
+            self.root.unbind("<Key>")
+            self.root.unbind("<FocusOut>")
+        except Exception:
+            pass
+        self.bind_hotkeys()
+        self.refresh_dynamic_items()
+
+    def on_key(self, e) -> None:
+        if not self.capturing:
+            return
+        sym = (e.keysym or "").lower()
+        if sym == "escape":
+            self.end_capture()
+            return
+        if sym in ("return", "shift_l", "shift_r", "control_l", "control_r", "alt_l", "alt_r", "caps_lock", "tab"):
+            return
+
+        # Resolve physical Virtual-Key code cleanly regardless of Cyrillic/non-ASCII keyboard layout
+        kc = int(getattr(e, "keycode", 0) or 0)
+        key = NAME_BY_VK.get(kc)
+        if not key and sym in VK_BY_NAME:
+            key = sym
+        if not key and len(sym) == 1:
+            scan_vk = int(user32.VkKeyScanW(sym)) & 0xFF
+            key = NAME_BY_VK.get(scan_vk)
+        if not key:
+            return
+
+        if key in RESERVED_HOTKEYS:
+            self.add_log(self.tr("err_key_res"))
+            self.end_capture()
+            return
+
+        which = self.capturing
+        other = self.live("stop_key" if which == "start" else "start_key")
+        if key == other:
+            self.add_log(self.tr("err_key_same"))
+            self.end_capture()
+            return
+
+        self.set_cfg(f"{which}_key", key)
+        self._clear_undo()
+        self.save()
+        self.add_log(f"{self.tr('log_key_set')}{key.upper()}")
+        self.end_capture()
+
+    def poll_hardware_hotkeys(self) -> None:
+        if self.capturing is not None:
+            return
+        for role in ("start", "stop"):
+            kname = str(self.live(f"{role}_key")).lower()
+            vk = VK_BY_NAME.get(kname)
+            if not vk:
+                continue
+            down = bool(user32.GetAsyncKeyState(vk) & 0x8000)
+            prev = self._vk_prev.get(role, False)
+            self._vk_prev[role] = down
+            if down and not prev:
+                if role == "start" and not self.running:
+                    self.start()
+                elif role == "stop" and self.running:
+                    self.stop()
+
+    # ---------------- Engine Run / Stop & Event Poll ----------------
+    def start(self) -> None:
+        if self.running:
+            return
+        method = int(self.live("method"))
+        if method == 0 and not any(self.live(k) for k in ("human", "swing", "space", "walk", "mouse")):
+            messagebox.showinfo(APP_NAME, self.tr("err_afk_req"))
+            return
+        try:
+            Matcher()
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"{self.tr('err_notfound')}{e}")
+            return
+
+        if self._clear_undo():
+            self.rebuild_ui()
+        while True:
+            try:
+                self.events.get_nowait()
+            except queue.Empty:
+                break
+
+        self.stop_event.clear()
+        self.busy_event.clear()
+        self.running = True
+        self.state = "starting"
+        self.detail_ref = {"key": "dt_afk_wait" if method == 0 else "dt_wait_game"}
+        self.add_log(self.ref(self.detail_ref))
+        self.refresh_dynamic_items()
+
+        self.worker = threading.Thread(target=self.worker_run, args=(method,), daemon=True)
+        self.worker.start()
+
+    def worker_run(self, method: int) -> None:
+        try:
+            with mss.MSS() as cap:
+                self.engine = Engine(self, cap)
+                self.engine.run(method)
+        except Exception as e:
+            self.emit("error", str(e))
+        finally:
+            self.engine = None
+            self.emit("finished", None)
+
+    def stop(self) -> None:
+        if not self.running:
+            return
+        self.state = "stopping"
+        self.stop_event.set()
+        if self.engine:
+            self.engine.release_all()
+        self.refresh_dynamic_items()
+
+    def poll(self) -> None:
+        self.poll_hardware_hotkeys()
+        changed = False
+        try:
+            while True:
+                k, v = self.events.get_nowait()
+                changed = True
+                if k == "status":
+                    self.state = str(v)
+                    if v == "running":
+                        self.add_log(self.tr("st_running"))
+                elif k == "detail":
+                    self.detail_ref = v
+                elif k == "log":
+                    self.add_log(self.ref(v) if isinstance(v, dict) else str(v))
+                elif k == "error":
+                    self.add_log(f"{self.tr('log_error')}{v}")
+                elif k == "finished":
+                    self.running = False
+                    self.state = "ready"
+                    self.detail_ref = {"key": "dt_idle"}
+                    self.add_log(self.tr("st_stopped"))
+                elif k == "cmd":
+                    if v == "start" and not self.running:
+                        self.start()
+                    elif v == "stop" and self.running:
+                        self.stop()
+        except queue.Empty:
+            pass
+        if changed:
+            self.refresh_dynamic_items()
+        self.root.after(55, self.poll)
+
+    def close(self) -> None:
+        self.stop_event.set()
+        if self.engine:
+            self.engine.release_all()
+        self.root.destroy()
+
+
+def main() -> None:
+    root = tk.Tk()
+    app = App(root)
+    if os.environ.get("PIRATE_DUMP_PREVIEW"):
+        img = app.render_headless_preview()
+        if img is not None:
+            img.save(os.environ["PIRATE_DUMP_PREVIEW"])
+        app.page = "set"
+        app.rebuild_ui(snap=True)
+        img2 = app.render_headless_preview()
+        if img2 is not None and os.environ.get("PIRATE_DUMP_PREVIEW_SET"):
+            img2.save(os.environ["PIRATE_DUMP_PREVIEW_SET"])
+        root.destroy()
+        return
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

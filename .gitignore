@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+settings.json
+settings.tmp
+build/
+dist/
+*.spec
+*.log
+.env
+*.token
+*.key
+Pirate Token Farm.exe
