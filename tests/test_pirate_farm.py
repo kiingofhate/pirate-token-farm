@@ -79,8 +79,8 @@ class TestWin32AndInputSafety(unittest.TestCase):
     def test_active_fortnite_hwnd_excludes_self_and_minimized(self):
         with patch.object(ff.user32, "GetForegroundWindow", return_value=12345), \
              patch.object(ff.user32, "IsIconic", return_value=0), \
-             patch.object(ff.user32, "GetWindowTextLengthW", return_value=24), \
-             patch.object(ff.user32, "GetWindowTextW", side_effect=lambda h, b, n: setattr(b, "value", "Pirate Token Farm · v4.0") or 24):
+             patch.object(ff.user32, "GetWindowTextLengthW", return_value=17), \
+             patch.object(ff.user32, "GetWindowTextW", side_effect=lambda h, b, n: setattr(b, "value", "Pirate Token Farm") or 17):
             self.assertIsNone(ff.active_fortnite_hwnd(allow_any_window=False))
             self.assertIsNone(ff.active_fortnite_hwnd(allow_any_window=True))
 

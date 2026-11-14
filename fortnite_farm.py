@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Pirate Token Farm v4.0 · Fortnite Smart Game & Anti-AFK Assistant
-Pure obsidian layered Canvas renderer (0% idle CPU, zero GDI leaks) + hardened DirectInput engine.
+Pirate Token Farm - Fortnite Game Loop and Anti-AFK Tool
+Obsidian layered Canvas renderer (0% idle CPU) + DirectInput engine.
 """
 
 from __future__ import annotations
@@ -335,7 +335,7 @@ def monitor_rect_for_hwnd(hwnd: int | None, fallback: dict) -> dict:
 # Constants, Obsidian Palette & Localization
 # ---------------------------------------------------------------------------
 APP_NAME = "Pirate Token Farm"
-APP_VERSION = "v4.0"
+APP_VERSION = ""
 if getattr(sys, "frozen", False):
     ROOT = Path(sys.executable).resolve().parent
     BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", ROOT))
@@ -451,7 +451,7 @@ TEXT = {
         "dt_walk_go": "Ходьба вперёд",
         "dt_walk_stand": "Пауза ~20 с на месте",
         "dt_walk_turn": "Разворот камеры ~180°",
-        "log_ready": "Конфигурация v4.0 загружена. DirectInput готов.",
+        "log_ready": "Конфигурация загружена. DirectInput готов.",
         "log_conn": "Экран загрузки распознан · Анти-АФК активен.",
         "btn_start": "Запустить",
         "btn_running": "Выполняется",
@@ -477,7 +477,7 @@ TEXT = {
         "any_title": "Разрешить работу в любом окне",
         "any_desc": "Для проверки макроса в Блокноте или на рабочем столе",
         "sec_about": "О ПРОГРАММЕ И ДИАГНОСТИКА",
-        "about_title": "Pirate Token Farm · v4.0 Human Anti-AFK",
+        "about_title": "Pirate Token Farm · Anti-AFK",
         "about_desc": "Только системный ввод DirectInput (SendInput). Без чтения памяти и вмешательства в файлы игры.",
         "admin_ok": "Администратор · DirectInput",
         "admin_no": "Обычный режим · DirectInput",
@@ -556,7 +556,7 @@ TEXT = {
         "dt_walk_go": "Walking forward",
         "dt_walk_stand": "Pausing ~20 s",
         "dt_walk_turn": "Turning ~180°",
-        "log_ready": "Config v4.0 loaded. DirectInput ready.",
+        "log_ready": "Config loaded. DirectInput ready.",
         "log_conn": "Connecting screen detected · Anti-AFK active.",
         "btn_start": "Start",
         "btn_running": "Running",
@@ -582,7 +582,7 @@ TEXT = {
         "any_title": "Allow any active window",
         "any_desc": "Useful for testing macro behavior in Notepad or on Desktop",
         "sec_about": "ABOUT & DIAGNOSTICS",
-        "about_title": "Pirate Token Farm · v4.0 Human Anti-AFK",
+        "about_title": "Pirate Token Farm · Anti-AFK",
         "about_desc": "Uses standard DirectInput (SendInput) only. Never reads process memory or modifies game files.",
         "admin_ok": "Administrator · DirectInput",
         "admin_no": "Standard mode · DirectInput",
@@ -1542,7 +1542,7 @@ def font_candidates(weight: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Layered Zero-Lag Obsidian UI Application (Pirate Token Farm v4.0)
+# Layered Zero-Lag Obsidian UI Application (Pirate Token Farm)
 # ---------------------------------------------------------------------------
 DEFAULTS = {
     "lang": "ru",
@@ -1992,8 +1992,9 @@ class App:
         # Header subtle hairline (NO square icon box!)
         draw.line((0, int(header_h * R), Wr, int(header_h * R)), fill=C_BORDER_SUB, width=max(1, int(R)))
         dr_txt(pad, 13.0, APP_NAME, 15.0, "bd", C_TX)
-        title_w = self.text_w(self.fnt(15.0 * ss, "bd"), APP_NAME) / R
-        dr_txt(pad + title_w + 8.0, 15.5, APP_VERSION, 11.5, "md", C_TX3)
+        if APP_VERSION:
+            title_w = self.text_w(self.fnt(15.0 * ss, "bd"), APP_NAME) / R
+            dr_txt(pad + title_w + 8.0, 15.5, APP_VERSION, 11.5, "md", C_TX3)
         dr_txt(pad, 34.0, self.tr("sub"), 11.5, "rg", C_TX2)
 
         # Header segmented RU/EN pill box + Settings button chrome

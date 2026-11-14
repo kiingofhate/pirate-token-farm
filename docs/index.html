@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Pirate Token Farm v4.0 | Автофарм и Анти-АФК для Fortnite</title>
+  <title>Pirate Token Farm | Автофарм и Анти-АФК для Fortnite</title>
   <meta name="description" content="Инструмент для Windows: автоперезапуск матчей в Fortnite через OpenCV и Анти-АФК через Windows SendInput." />
   <meta name="theme-color" content="#0E0F13" />
   <link rel="icon" type="image/png" href="./assets/icon.png" />
@@ -662,7 +662,6 @@
       <a href="#top" class="brand">
         <img src="./assets/icon.png" alt="Логотип Pirate Token Farm" width="34" height="34" />
         <span>Pirate Token Farm</span>
-        <span class="ver-badge" id="hdrVersion">v4.0.0</span>
       </a>
 
       <nav class="header-nav" aria-label="Навигация по разделам">
@@ -706,7 +705,7 @@
           </div>
 
           <div class="release-meta">
-            <span id="releaseTagText" data-i18n="release_loading">Релиз v4.0.0, сборка GitHub Actions</span>
+            <span id="releaseTagText" data-i18n="release_loading">Сборка для Windows на GitHub Actions</span>
             <span>/</span>
             <a id="downloadZipLink" href="https://github.com/kiingofhate/pirate-token-farm/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="cta_zip">Portable ZIP</a>
             <span>/</span>
@@ -737,7 +736,7 @@
             <button type="button" class="preview-tab" role="tab" aria-selected="false" data-slide="en">English UI</button>
           </div>
           <div class="preview-stage">
-            <img id="previewImg" src="./assets/preview-ru.png" alt="Главный экран Pirate Token Farm v4.0" width="640" height="804" />
+            <img id="previewImg" src="./assets/preview-ru.png" alt="Главный экран Pirate Token Farm" width="640" height="804" />
           </div>
           <div class="preview-caption" id="previewCaption" data-i18n="cap_ru">
             Основное окно с настройками режима и Анти-АФК
@@ -870,7 +869,7 @@ python tests\test_pirate_farm.py</pre>
 
   <footer class="site-footer">
     <div class="container footer-inner">
-      <span>Pirate Token Farm v4.0, MIT License</span>
+      <span>Pirate Token Farm, MIT License</span>
       <div class="footer-links">
         <a href="https://github.com/kiingofhate/pirate-token-farm" target="_blank" rel="noopener noreferrer" data-i18n="ft_repo">Репозиторий</a>
         <a href="https://github.com/kiingofhate/pirate-token-farm/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="ft_rel">Релизы и .EXE</a>
@@ -893,7 +892,7 @@ python tests\test_pirate_farm.py</pre>
         hero_desc: "Небольшая программа для Windows без нагрузки на процессор в простое. Ищет кнопки матча через OpenCV и отправляет действия игрока через системный SendInput.",
         cta_download: "Скачать для Windows (.exe)",
         cta_source: "Исходники на GitHub",
-        release_loading: "Релиз v4.0.0, сборка GitHub Actions",
+        release_loading: "Сборка для Windows на GitHub Actions",
         cta_zip: "Portable ZIP",
         stat_cpu: "В простое, 30 автотестов",
         stat_input: "Системный SendInput без правки игры",
@@ -966,7 +965,7 @@ python tests\test_pirate_farm.py</pre>
         hero_desc: "Lightweight Windows tool with zero idle CPU usage. Detects match buttons using OpenCV and sends player inputs through Win32 SendInput.",
         cta_download: "Download for Windows (.exe)",
         cta_source: "View Source on GitHub",
-        release_loading: "Release v4.0.0, GitHub Actions build",
+        release_loading: "Windows build via GitHub Actions",
         cta_zip: "Portable ZIP",
         stat_cpu: "Idle state, 30 unit tests",
         stat_input: "System SendInput without game edits",
@@ -1031,7 +1030,7 @@ python tests\test_pirate_farm.py</pre>
     };
 
     const SLIDES = {
-      ru: { src: "./assets/preview-ru.png", capKey: "cap_ru", alt: "Главный экран Pirate Token Farm v4.0 (RU)", w: 640, h: 804 },
+      ru: { src: "./assets/preview-ru.png", capKey: "cap_ru", alt: "Главный экран Pirate Token Farm (RU)", w: 640, h: 804 },
       running: { src: "./assets/preview-running.png", capKey: "cap_run", alt: "Раскрытые параметры и статус Работает", w: 640, h: 944 },
       settings: { src: "./assets/preview-settings.png", capKey: "cap_set", alt: "Экран настроек Pirate Token Farm", w: 640, h: 582 },
       en: { src: "./assets/preview-en.png", capKey: "cap_en", alt: "Pirate Token Farm English interface", w: 640, h: 804 }
@@ -1039,7 +1038,6 @@ python tests\test_pirate_farm.py</pre>
 
     let currentLang = "ru";
     let currentSlide = "ru";
-    let latestReleaseTag = "v4.0.0";
 
     function applyLang(lang) {
       currentLang = I18N[lang] ? lang : "ru";
@@ -1051,13 +1049,7 @@ python tests\test_pirate_farm.py</pre>
       document.querySelectorAll("[data-i18n]").forEach((el) => {
         const key = el.getAttribute("data-i18n");
         if (dict[key]) {
-          if (key === "release_loading") {
-            el.textContent = currentLang === "ru"
-              ? `Релиз ${latestReleaseTag}, сборка GitHub Actions`
-              : `Release ${latestReleaseTag}, GitHub Actions build`;
-          } else {
-            el.textContent = dict[key];
-          }
+          el.textContent = dict[key];
         }
       });
       applySlide(currentSlide);
@@ -1095,14 +1087,11 @@ python tests\test_pirate_farm.py</pre>
       });
     });
 
-    // Hydrate direct .exe & .zip links dynamically from latest published GitHub Release
+    // Update download links from latest GitHub Release
     fetch("https://api.github.com/repos/kiingofhate/pirate-token-farm/releases/latest")
       .then((res) => (res.ok ? res.json() : null))
       .then((rel) => {
-        if (!rel || !rel.tag_name) return;
-        latestReleaseTag = rel.tag_name;
-        const badge = document.getElementById("hdrVersion");
-        if (badge) badge.textContent = rel.tag_name;
+        if (!rel) return;
         const assets = Array.isArray(rel.assets) ? rel.assets : [];
         const exeAsset = assets.find((a) => a.name && a.name.endsWith(".exe"));
         const zipAsset = assets.find((a) => a.name && a.name.endsWith(".zip"));
@@ -1110,7 +1099,6 @@ python tests\test_pirate_farm.py</pre>
         if (exeAsset) document.getElementById("downloadExeBtn").href = exeAsset.browser_download_url;
         if (zipAsset) document.getElementById("downloadZipLink").href = zipAsset.browser_download_url;
         if (shaAsset) document.getElementById("checksumsLink").href = shaAsset.browser_download_url;
-        applyLang(currentLang);
       })
       .catch(() => {});
   </script>

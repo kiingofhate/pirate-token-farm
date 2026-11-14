@@ -1,6 +1,6 @@
 <div align="center">
   <img src="assets/icon.png" alt="Pirate Token Farm Logo" width="104" height="104" />
-  <h1>Pirate Token Farm v4.0</h1>
+  <h1>Pirate Token Farm</h1>
   <p>Автоперезапуск матчей и Анти-АФК для Fortnite на Windows (OpenCV + DirectInput)</p>
 
   <p>
@@ -57,7 +57,7 @@
 
 ### Готовый EXE (Python не нужен)
 
-1. Скачайте `PirateTokenFarm-v...-win64.exe` или архив `PirateTokenFarm-v...-win64-portable.zip` со страницы [Releases](https://github.com/kiingofhate/pirate-token-farm/releases/latest) или с [сайта проекта](https://kiingofhate.github.io/pirate-token-farm/).
+1. Скачайте `PirateTokenFarm-win64.exe` или архив `PirateTokenFarm-win64-portable.zip` со страницы [Releases](https://github.com/kiingofhate/pirate-token-farm/releases/latest) или с [сайта проекта](https://kiingofhate.github.io/pirate-token-farm/).
 2. Запустите файл от имени администратора (права нужны Windows для работы `SendInput` и глобальных клавиш поверх окна игры).
 3. Нажмите `Запустить [F6]` и переключитесь обратно в Fortnite. При переходе на рабочий стол бот уйдёт на паузу.
 
@@ -84,7 +84,7 @@ python tests/test_pirate_farm.py
 
 <h2 id="english">English</h2>
 
-**Pirate Token Farm v4.0** is a Windows automation tool for Fortnite written in Python (Tkinter Canvas UI, OpenCV, `mss`, Win32 `SendInput`).
+**Pirate Token Farm** is a Windows automation tool for Fortnite written in Python (Tkinter Canvas UI, OpenCV, `mss`, Win32 `SendInput`).
 
 ### Features
 

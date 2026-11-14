@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+      - "release"
   workflow_dispatch:
 
 permissions:
@@ -50,8 +51,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release_out | Out-Null
-          $ver = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { 'v4.0.0' }
-          $exeOut = "release_out\PirateTokenFarm-$ver-win64.exe"
+          $exeOut = "release_out\PirateTokenFarm-win64.exe"
           Copy-Item "dist\PirateTokenFarm.exe" $exeOut -Force
 
           $portDir = "release_out\portable\PirateTokenFarm"
@@ -61,7 +61,7 @@ jobs:
           Copy-Item "LICENSE" "$portDir\LICENSE" -Force
           Copy-Item "settings.example.json" "$portDir\settings.example.json" -Force
 
-          $zipOut = "release_out\PirateTokenFarm-$ver-win64-portable.zip"
+          $zipOut = "release_out\PirateTokenFarm-win64-portable.zip"
           Compress-Archive -Path "$portDir\*" -DestinationPath $zipOut -Force
           Remove-Item "release_out\portable" -Recurse -Force
 
@@ -72,14 +72,14 @@ jobs:
           Get-Content "release_out\SHA256SUMS.txt"
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.0.0' }}
-          name: Pirate Token Farm ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v4.0.0' }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'release' }}
+          name: Pirate Token Farm
           make_latest: true
           generate_release_notes: true
           files: |
-            release_out/PirateTokenFarm-*-win64.exe
-            release_out/PirateTokenFarm-*-win64-portable.zip
+            release_out/PirateTokenFarm-win64.exe
+            release_out/PirateTokenFarm-win64-portable.zip
             release_out/SHA256SUMS.txt
