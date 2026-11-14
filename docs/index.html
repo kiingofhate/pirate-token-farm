@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Pirate Token Farm v4.0 — Умный ассистент и Анти-АФК для Fortnite</title>
-  <meta name="description" content="Открытый Windows-ассистент для Fortnite: автоматический перезапуск матчей через OpenCV и живой человекоподобный Анти-АФК через DirectInput." />
+  <title>Pirate Token Farm v4.0 | Автофарм и Анти-АФК для Fortnite</title>
+  <meta name="description" content="Инструмент для Windows: автоперезапуск матчей в Fortnite через OpenCV и Анти-АФК через Windows SendInput." />
   <meta name="theme-color" content="#0E0F13" />
   <link rel="icon" type="image/png" href="./assets/icon.png" />
   <link rel="shortcut icon" href="./assets/icon.ico" />
@@ -688,12 +688,12 @@
         <div>
           <div class="status-pill">
             <span class="status-dot" aria-hidden="true"></span>
-            <span data-i18n="hero_pill">Открытый код · DirectInput · Windows 10 / 11</span>
+            <span data-i18n="hero_pill">Windows 10 / 11, DirectInput</span>
           </div>
 
-          <h1 data-i18n="hero_title">Автофарм матчей и живой Анти-АФК для Fortnite</h1>
+          <h1 data-i18n="hero_title">Автофарм матчей и Анти-АФК для Fortnite</h1>
           <p class="hero-desc" data-i18n="hero_desc">
-            Лёгкий ассистент в тёмной обсидиановой оболочке с нулевой нагрузкой на процессор в покое. Перезапускает матчи по OpenCV-шаблонам и имитирует действия реального игрока через аппаратные скан-коды Windows.
+            Небольшая программа для Windows без нагрузки на процессор в простое. Ищет кнопки матча через OpenCV и отправляет действия игрока через системный SendInput.
           </p>
 
           <div class="hero-cta-row">
@@ -701,22 +701,22 @@
               Скачать для Windows (.exe)
             </a>
             <a class="btn btn-secondary" href="https://github.com/kiingofhate/pirate-token-farm" target="_blank" rel="noopener noreferrer" data-i18n="cta_source">
-              Открытый код на GitHub
+              Исходники на GitHub
             </a>
           </div>
 
           <div class="release-meta">
-            <span id="releaseTagText" data-i18n="release_loading">Релиз: v4.0.0 · Автосборка GitHub Actions</span>
-            <span>·</span>
+            <span id="releaseTagText" data-i18n="release_loading">Релиз v4.0.0, сборка GitHub Actions</span>
+            <span>/</span>
             <a id="downloadZipLink" href="https://github.com/kiingofhate/pirate-token-farm/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="cta_zip">Portable ZIP</a>
-            <span>·</span>
+            <span>/</span>
             <a id="checksumsLink" href="https://github.com/kiingofhate/pirate-token-farm/releases/latest" target="_blank" rel="noopener noreferrer">SHA256SUMS.txt</a>
           </div>
 
           <div class="trust-strip">
             <div class="trust-item">
               <div class="trust-val">0% CPU</div>
-              <div class="trust-lbl" data-i18n="stat_cpu">В покое и без анимаций, 30 автотестов</div>
+              <div class="trust-lbl" data-i18n="stat_cpu">В простое, 30 автотестов</div>
             </div>
             <div class="trust-item">
               <div class="trust-val">DirectInput</div>
@@ -724,7 +724,7 @@
             </div>
             <div class="trust-item">
               <div class="trust-val">F6 / F7</div>
-              <div class="trust-lbl" data-i18n="stat_hotkeys">Глобальные бинды независимые от раскладки</div>
+              <div class="trust-lbl" data-i18n="stat_hotkeys">Хоткеи работают на любой раскладке</div>
             </div>
           </div>
         </div>
@@ -740,7 +740,7 @@
             <img id="previewImg" src="./assets/preview-ru.png" alt="Главный экран Pirate Token Farm v4.0" width="640" height="804" />
           </div>
           <div class="preview-caption" id="previewCaption" data-i18n="cap_ru">
-            Чистый обсидиановый интерфейс с раздельным управлением методами и Анти-АФК
+            Основное окно с настройками режима и Анти-АФК
           </div>
         </aside>
       </div>
@@ -749,10 +749,10 @@
     <section class="section" id="methods">
       <div class="container">
         <div class="section-head">
-          <div class="section-kicker" data-i18n="sec_methods_k">ИГРОВОЙ ЦИКЛ</div>
-          <h2 data-i18n="sec_methods_t">Три сценария фарма под любой режим Fortnite</h2>
+          <div class="section-kicker" data-i18n="sec_methods_k">РЕЖИМЫ</div>
+          <h2 data-i18n="sec_methods_t">Три сценария работы</h2>
           <p class="section-sub" data-i18n="sec_methods_s">
-            Масштабируемый OpenCV-поиск с маской фона стабильно находит кнопки при разном разрешении мониторов и оформлении сезонов.
+            OpenCV с маской вокруг текста находит нужные кнопки при разном разрешении экрана.
           </p>
         </div>
 
@@ -770,7 +770,7 @@
           <article class="card">
             <span class="card-badge" data-i18n="m3_badge">Метод 3</span>
             <h3 data-i18n="m3_t">Только Анти-АФК</h3>
-            <p data-i18n="m3_d">Полностью отключает захват экрана и OpenCV — работает только генератор движений, идеален для долгих творческих карт и LEGO.</p>
+            <p data-i18n="m3_d">Отключает захват экрана и OpenCV, остаётся только движение в Анти-АФК. Удобно для долгих творческих карт и LEGO.</p>
           </article>
         </div>
       </div>
@@ -780,9 +780,9 @@
       <div class="container">
         <div class="section-head">
           <div class="section-kicker" data-i18n="sec_afk_k">РЕЖИМ «СЛАБЫЙ ИГРОК»</div>
-          <h2 data-i18n="sec_afk_t">Живое разнообразие действий против АФК-детекции</h2>
+          <h2 data-i18n="sec_afk_t">Набор действий для имитации игры</h2>
           <p class="section-sub" data-i18n="sec_afk_s">
-            Вместо однотипного зажатия W и таймера бот смешивает стрейфы, подкаты, увороты и микро-коррекции камеры с аритмичными интервалами.
+            Вместо зажатия одной клавиши по таймеру скрипт перемешивает движения, прыжки и повороты камеры со случайными паузами.
           </p>
         </div>
 
@@ -792,8 +792,8 @@
             <p data-i18n="a1_d">Разгон на спринте W + Shift, подкат Ctrl со смещением камеры и выход через Space со стрейфом или полный докат.</p>
           </article>
           <article class="card">
-            <h3 data-i18n="a2_t">Увороты стрейфами A–D</h3>
-            <p data-i18n="a2_d">Серии из 3–5 быстрых смен направления влево и вправо с лёгкой противофазной доводкой прицела.</p>
+            <h3 data-i18n="a2_t">Увороты стрейфами A/D</h3>
+            <p data-i18n="a2_d">Серии из 3-5 быстрых шагов влево и вправо с небольшим смещением прицела.</p>
           </article>
           <article class="card">
             <h3 data-i18n="a3_t">Приседания с осмотром</h3>
@@ -801,15 +801,15 @@
           </article>
           <article class="card">
             <h3 data-i18n="a4_t">Удары киркой и прыжок-удар</h3>
-            <p data-i18n="a4_d">Рандомные взмахи, серии по 2–3 удара с шагом вбок, удержание ЛКМ или комбо прыжок + флик + удар.</p>
+            <p data-i18n="a4_d">Одиночные взмахи, серии по 2-3 удара со стрейфом, удержание ЛКМ или прыжок с ударом.</p>
           </article>
           <article class="card">
             <h3 data-i18n="a5_t">Короткий осмотр ПКМ</h3>
             <p data-i18n="a5_d">Кратковременное прицеливание правой кнопкой с плавным ведением и защитой от срабатывания во время фарма ЛКМ.</p>
           </article>
           <article class="card">
-            <h3 data-i18n="a6_t">Живая камера и аритмия</h3>
-            <p data-i18n="a6_d">Косинусные повороты с ограничением вертикального угла, оглядки назад, микро-дрейф в паузах и рваный ритм пауз.</p>
+            <h3 data-i18n="a6_t">Повороты камеры и паузы</h3>
+            <p data-i18n="a6_d">Плавные повороты с ограничением угла по вертикали, оглядки назад, микро-дрейф и случайные интервалы между действиями.</p>
           </article>
         </div>
       </div>
@@ -819,17 +819,17 @@
       <div class="container">
         <div class="safety-banner">
           <div>
-            <div class="section-kicker" data-i18n="sec_safe_k">ПРОЗРАЧНАЯ АРХИТЕКТУРА</div>
-            <h2 data-i18n="sec_safe_t">Открытый код и ноль вмешательства в клиент игры</h2>
+            <div class="section-kicker" data-i18n="sec_safe_k">БЕЗОПАСНОСТЬ</div>
+            <h2 data-i18n="sec_safe_t">Без вмешательства в клиент игры</h2>
             <p class="section-sub" data-i18n="sec_safe_s">
-              Весь исходный код открыт под лицензией MIT, а готовые .exe собираются публично в GitHub Actions с проверкой хеш-сумм SHA-256.
+              Весь код открыт по лицензии MIT, а готовые .exe собираются в GitHub Actions с проверкой SHA-256.
             </p>
           </div>
           <ul class="check-list">
             <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_1">Не читает и не меняет память процесса, не внедряет DLL и не трогает файлы Fortnite.</span></li>
-            <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_2">Работает только когда окно игры в фокусе — автопауза при любом Alt+Tab.</span></li>
+            <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_2">При потере фокуса или сворачивании Fortnite действия сразу ставятся на паузу.</span></li>
             <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_3">Сброс всех клавиш и кнопок мыши (LMB/RMB) при остановке, ошибке или клике меню.</span></li>
-            <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_4">Не использует клавиши Esc, Tab, I, M, B, E во время Анти-АФК — меню не откроются случайно.</span></li>
+            <li><span class="check-mark" aria-hidden="true">✓</span><span data-i18n="sf_4">Не нажимает Esc, Tab, I, M, B, E во время Анти-АФК, чтобы не открывать лишние меню.</span></li>
           </ul>
         </div>
       </div>
@@ -838,7 +838,7 @@
     <section class="section" id="install">
       <div class="container">
         <div class="section-head">
-          <div class="section-kicker" data-i18n="sec_inst_k">БЫСТРЫЙ СТАРТ</div>
+          <div class="section-kicker" data-i18n="sec_inst_k">УСТАНОВКА</div>
           <h2 data-i18n="sec_inst_t">Два способа запуска</h2>
         </div>
 
@@ -849,7 +849,7 @@
             <p data-i18n="in1_d">Автономный исполняемый файл без установки Python и сторонних библиотек.</p>
             <ol class="steps-list">
               <li data-i18n="in1_s1">Скачайте релиз из раздела GitHub Releases по кнопке выше.</li>
-              <li data-i18n="in1_s2">Запустите от администратора — UAC нужен Windows для отправки скан-кодов поверх окна игры.</li>
+              <li data-i18n="in1_s2">Запустите от администратора. Права нужны Windows для отправки скан-кодов поверх окна игры.</li>
               <li data-i18n="in1_s3">Настройте поворот 180° под чувствительность мыши и нажмите F6 в игре (F7 для стопа).</li>
             </ol>
           </article>
@@ -870,7 +870,7 @@ python tests\test_pirate_farm.py</pre>
 
   <footer class="site-footer">
     <div class="container footer-inner">
-      <span>Pirate Token Farm v4.0 · MIT License</span>
+      <span>Pirate Token Farm v4.0, MIT License</span>
       <div class="footer-links">
         <a href="https://github.com/kiingofhate/pirate-token-farm" target="_blank" rel="noopener noreferrer" data-i18n="ft_repo">Репозиторий</a>
         <a href="https://github.com/kiingofhate/pirate-token-farm/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="ft_rel">Релизы и .EXE</a>
@@ -888,26 +888,26 @@ python tests\test_pirate_farm.py</pre>
         nav_safety: "Безопасность",
         nav_install: "Установка",
         hdr_github: "GitHub",
-        hero_pill: "Открытый код · DirectInput · Windows 10 / 11",
-        hero_title: "Автофарм матчей и живой Анти-АФК для Fortnite",
-        hero_desc: "Лёгкий ассистент в тёмной обсидиановой оболочке с нулевой нагрузкой на процессор в покое. Перезапускает матчи по OpenCV-шаблонам и имитирует действия реального игрока через аппаратные скан-коды Windows.",
+        hero_pill: "Windows 10 / 11, DirectInput",
+        hero_title: "Автофарм матчей и Анти-АФК для Fortnite",
+        hero_desc: "Небольшая программа для Windows без нагрузки на процессор в простое. Ищет кнопки матча через OpenCV и отправляет действия игрока через системный SendInput.",
         cta_download: "Скачать для Windows (.exe)",
-        cta_source: "Открытый код на GitHub",
-        release_loading: "Релиз: v4.0.0 · Автосборка GitHub Actions",
+        cta_source: "Исходники на GitHub",
+        release_loading: "Релиз v4.0.0, сборка GitHub Actions",
         cta_zip: "Portable ZIP",
-        stat_cpu: "В покое и без анимаций, 30 автотестов",
+        stat_cpu: "В простое, 30 автотестов",
         stat_input: "Системный SendInput без правки игры",
-        stat_hotkeys: "Глобальные бинды независимые от раскладки",
+        stat_hotkeys: "Хоткеи работают на любой раскладке",
         tab_ru: "Главный (RU)",
         tab_run: "В работе",
         tab_set: "Настройки",
-        cap_ru: "Чистый обсидиановый интерфейс с раздельным управлением методами и Анти-АФК",
-        cap_run: "Раскрытые параметры цикла, живой журнал событий и активный статус «Работает»",
-        cap_set: "Экран настроек: анимации, калибровка поворота на 180° и переназначение клавиш",
-        cap_en: "Полная английская локализация без смещения отступов и обрезания строк",
-        sec_methods_k: "ИГРОВОЙ ЦИКЛ",
-        sec_methods_t: "Три сценария фарма под любой режим Fortnite",
-        sec_methods_s: "Масштабируемый OpenCV-поиск с маской фона стабильно находит кнопки при разном разрешении мониторов и оформлении сезонов.",
+        cap_ru: "Основное окно с настройками режима и Анти-АФК",
+        cap_run: "Раскрытые параметры цикла и окно журнала",
+        cap_set: "Настройки: анимации, поворот на 180° и хоткеи",
+        cap_en: "Английская версия интерфейса",
+        sec_methods_k: "РЕЖИМЫ",
+        sec_methods_t: "Три сценария работы",
+        sec_methods_s: "OpenCV с маской вокруг текста находит нужные кнопки при разном разрешении экрана.",
         m1_badge: "Метод 1",
         m1_t: "Повторная игра",
         m1_d: "Сканирует экран окончания матча и сам нажимает «Играть снова», а при включённом резерве кликает «Играть» в лобби.",
@@ -916,36 +916,36 @@ python tests\test_pirate_farm.py</pre>
         m2_d: "Запускает матч, ждёт случайный таймер (настройка минут от/до), открывает меню, выходит в лобби и стартует заново.",
         m3_badge: "Метод 3",
         m3_t: "Только Анти-АФК",
-        m3_d: "Полностью отключает захват экрана и OpenCV — работает только генератор движений, идеален для долгих творческих карт и LEGO.",
+        m3_d: "Отключает захват экрана и OpenCV, остаётся только движение в Анти-АФК. Удобно для долгих творческих карт и LEGO.",
         sec_afk_k: "РЕЖИМ «СЛАБЫЙ ИГРОК»",
-        sec_afk_t: "Живое разнообразие действий против АФК-детекции",
-        sec_afk_s: "Вместо однотипного зажатия W и таймера бот смешивает стрейфы, подкаты, увороты и микро-коррекции камеры с аритмичными интервалами.",
+        sec_afk_t: "Набор действий для имитации игры",
+        sec_afk_s: "Вместо зажатия одной клавиши по таймеру скрипт перемешивает движения, прыжки и повороты камеры со случайными паузами.",
         a1_t: "Подкаты и прыжок из подката",
         a1_d: "Разгон на спринте W + Shift, подкат Ctrl со смещением камеры и выход через Space со стрейфом или полный докат.",
-        a2_t: "Увороты стрейфами A–D",
-        a2_d: "Серии из 3–5 быстрых смен направления влево и вправо с лёгкой противофазной доводкой прицела.",
+        a2_t: "Увороты стрейфами A/D",
+        a2_d: "Серии из 3-5 быстрых шагов влево и вправо с небольшим смещением прицела.",
         a3_t: "Приседания с осмотром",
         a3_d: "Короткие приседания, двойные пики и присед-стрейфы с точным сохранением баланса тоггла Ctrl.",
         a4_t: "Удары киркой и прыжок-удар",
-        a4_d: "Рандомные взмахи, серии по 2–3 удара с шагом вбок, удержание ЛКМ или комбо прыжок + флик + удар.",
+        a4_d: "Одиночные взмахи, серии по 2-3 удара со стрейфом, удержание ЛКМ или прыжок с ударом.",
         a5_t: "Короткий осмотр ПКМ",
         a5_d: "Кратковременное прицеливание правой кнопкой с плавным ведением и защитой от срабатывания во время фарма ЛКМ.",
-        a6_t: "Живая камера и аритмия",
-        a6_d: "Косинусные повороты с ограничением вертикального угла, оглядки назад, микро-дрейф в паузах и рваный ритм пауз.",
-        sec_safe_k: "ПРОЗРАЧНАЯ АРХИТЕКТУРА",
-        sec_safe_t: "Открытый код и ноль вмешательства в клиент игры",
-        sec_safe_s: "Весь исходный код открыт под лицензией MIT, а готовые .exe собираются публично в GitHub Actions с проверкой хеш-сумм SHA-256.",
+        a6_t: "Повороты камеры и паузы",
+        a6_d: "Плавные повороты с ограничением угла по вертикали, оглядки назад, микро-дрейф и случайные интервалы между действиями.",
+        sec_safe_k: "БЕЗОПАСНОСТЬ",
+        sec_safe_t: "Без вмешательства в клиент игры",
+        sec_safe_s: "Весь код открыт по лицензии MIT, а готовые .exe собираются в GitHub Actions с проверкой SHA-256.",
         sf_1: "Не читает и не меняет память процесса, не внедряет DLL и не трогает файлы Fortnite.",
-        sf_2: "Работает только когда окно игры в фокусе — автопауза при любом Alt+Tab.",
+        sf_2: "При потере фокуса или сворачивании Fortnite действия сразу ставятся на паузу.",
         sf_3: "Сброс всех клавиш и кнопок мыши (LMB/RMB) при остановке, ошибке или клике меню.",
-        sf_4: "Не использует клавиши Esc, Tab, I, M, B, E во время Анти-АФК — меню не откроются случайно.",
-        sec_inst_k: "БЫСТРЫЙ СТАРТ",
+        sf_4: "Не нажимает Esc, Tab, I, M, B, E во время Анти-АФК, чтобы не открывать лишние меню.",
+        sec_inst_k: "УСТАНОВКА",
         sec_inst_t: "Два способа запуска",
         in1_badge: "Рекомендуется",
         in1_t: "Готовый Windows EXE",
         in1_d: "Автономный исполняемый файл без установки Python и сторонних библиотек.",
         in1_s1: "Скачайте релиз из раздела GitHub Releases по кнопке выше.",
-        in1_s2: "Запустите от администратора — UAC нужен Windows для отправки скан-кодов поверх окна игры.",
+        in1_s2: "Запустите от администратора. Права нужны Windows для отправки скан-кодов поверх окна игры.",
         in1_s3: "Настройте поворот 180° под чувствительность мыши и нажмите F6 в игре (F7 для стопа).",
         in2_badge: "Для разработчиков",
         in2_t: "Запуск из исходного кода",
@@ -961,26 +961,26 @@ python tests\test_pirate_farm.py</pre>
         nav_safety: "Safety",
         nav_install: "Setup",
         hdr_github: "GitHub",
-        hero_pill: "Open Source · DirectInput · Windows 10 / 11",
-        hero_title: "Smart Match Loop & Human-Like Anti-AFK for Fortnite",
-        hero_desc: "Lightweight Obsidian desktop assistant with zero idle CPU usage. Re-queues matches via halo-masked OpenCV detection and emulates casual player movement using Windows hardware DirectInput.",
+        hero_pill: "Windows 10 / 11, DirectInput",
+        hero_title: "Match Loop and Anti-AFK for Fortnite",
+        hero_desc: "Lightweight Windows tool with zero idle CPU usage. Detects match buttons using OpenCV and sends player inputs through Win32 SendInput.",
         cta_download: "Download for Windows (.exe)",
         cta_source: "View Source on GitHub",
-        release_loading: "Release: v4.0.0 · Built on GitHub Actions",
+        release_loading: "Release v4.0.0, GitHub Actions build",
         cta_zip: "Portable ZIP",
-        stat_cpu: "Zero idle usage · 30 automated unit tests",
-        stat_input: "System SendInput without modifying game files",
-        stat_hotkeys: "Layout-independent global VK hotkeys",
+        stat_cpu: "Idle state, 30 unit tests",
+        stat_input: "System SendInput without game edits",
+        stat_hotkeys: "Global hotkeys work on any layout",
         tab_ru: "Main (RU)",
         tab_run: "Running UI",
         tab_set: "Settings",
-        cap_ru: "Obsidian dark layered UI with independent match loop and Anti-AFK controls",
-        cap_run: "Expanded method parameters, live telemetry log, and active Running state",
-        cap_set: "Settings view: motion toggle, 180° turn calibration, and layout-safe hotkeys",
-        cap_en: "Complete English localization without clipped labels or shifted spacing",
-        sec_methods_k: "MATCH AUTOMATION",
-        sec_methods_t: "Three farming workflows for any Fortnite mode",
-        sec_methods_s: "Scale-invariant halo-masked OpenCV template matching reliably locates queue controls across monitor DPIs and seasonal themes.",
+        cap_ru: "Main window with match mode and Anti-AFK controls",
+        cap_run: "Expanded method options, activity log, and Running state",
+        cap_set: "Settings page: toggle animations, 180-deg turn, and hotkeys",
+        cap_en: "English UI localization",
+        sec_methods_k: "MODES",
+        sec_methods_t: "Three farming workflows",
+        sec_methods_s: "Masked OpenCV template matching finds game buttons across different screen resolutions.",
         m1_badge: "Method 1",
         m1_t: "Play Again Loop",
         m1_d: "Detects end-of-match screens and clicks Play Again automatically, with optional Lobby Play fallback.",
@@ -989,34 +989,34 @@ python tests\test_pirate_farm.py</pre>
         m2_d: "Starts a match, waits a randomized minute range, opens the menu, returns to lobby, and requeues.",
         m3_badge: "Method 3",
         m3_t: "Anti-AFK Only",
-        m3_d: "Bypasses screen capture and OpenCV completely for zero vision overhead on long Creative or LEGO maps.",
-        sec_afk_k: "CASUAL PLAYER ENGINE",
-        sec_afk_t: "Varied human behaviors to defeat AFK pattern checks",
-        sec_afk_s: "Instead of rigid linear loops, the engine mixes strafes, sprint-slides, wiggles, and smooth camera sweeps on non-periodic rhythm intervals.",
+        m3_d: "Turns off screen capture and OpenCV, leaving only Anti-AFK movement running for Creative and LEGO maps.",
+        sec_afk_k: "CASUAL PLAYER MODE",
+        sec_afk_t: "Varied movement and actions",
+        sec_afk_s: "Instead of holding one key on a fixed timer, the script mixes strafes, slides, jumps, and camera turns with random pauses.",
         a1_t: "Sprint-Slides & Slide-Hops",
         a1_d: "Sprints (W + Shift), slides (Ctrl) with curved camera sweeps, and exits via Space slide-hop or full slide settle.",
-        a2_t: "A–D Dodge Wiggles",
-        a2_d: "Short 3–5 step alternating strafe bursts left and right with counter-aim mouse micro-tracking.",
+        a2_t: "A/D Dodge Wiggles",
+        a2_d: "Short 3-5 step alternating strafe bursts left and right with counter-aim mouse tracking.",
         a3_t: "Crouch-Peeks & Strafes",
-        a3_d: "Brief crouch peeks and stealth strafes tracking even Ctrl toggle counts cleanly in finally blocks.",
+        a3_d: "Brief crouch peeks and stealth strafes keeping Ctrl toggle state balanced cleanly in finally blocks.",
         a4_t: "Pickaxe Swings & Jump-Chop",
-        a4_d: "Random chops, 2–3 swing combos with sidesteps, LMB hold, or jump-flick-swing maneuvers.",
+        a4_d: "Random chops, 2-3 swing combos with sidesteps, LMB hold, or jump-flick-swing maneuvers.",
         a5_t: "Brief RMB Peek",
-        a5_d: "Short harmless right-click ADS glances paired with fine tracking, muted automatically when LMB harvest hold is active.",
-        a6_t: "Eased Camera & Rhythm Bursts",
-        a6_d: "Cosine mouse curves with vertical pitch clamping, shoulder checks, idle aim drift, and mixed burst/relax timing.",
-        sec_safe_k: "TRANSPARENT ARCHITECTURE",
-        sec_safe_t: "Open-source code with zero game file or memory tampering",
-        sec_safe_s: "Full MIT-licensed source code and public cloud builds compiled on GitHub Actions with verifiable SHA-256 checksums.",
+        a5_d: "Short right-click ADS glances paired with fine tracking, disabled automatically while LMB harvest hold is active.",
+        a6_t: "Camera Turns & Pauses",
+        a6_d: "Smooth camera curves with vertical pitch clamping, shoulder checks, idle aim drift, and mixed pause timing.",
+        sec_safe_k: "SAFETY",
+        sec_safe_t: "Zero game file or memory edits",
+        sec_safe_s: "MIT-licensed source code with public Windows builds compiled on GitHub Actions and checked with SHA-256.",
         sf_1: "Never reads/writes process memory, never injects DLLs, and leaves all game files untouched.",
-        sf_2: "Automatically pauses on Alt+Tab whenever Fortnite is minimized or loses foreground focus.",
-        sf_3: "Unconditionally releases all held keys, LMB, and RMB on Stop (F7), focus loss, or button clicks.",
-        sf_4: "Avoids Esc, Tab, I, M, B, E during Anti-AFK so menus or emotes never open accidentally.",
-        sec_inst_k: "QUICK START",
+        sf_2: "Pauses immediately on Alt+Tab whenever Fortnite is minimized or loses foreground focus.",
+        sf_3: "Releases all held keys, LMB, and RMB on Stop (F7), focus loss, or button clicks.",
+        sf_4: "Avoids Esc, Tab, I, M, B, E during Anti-AFK so menus or emotes do not open by mistake.",
+        sec_inst_k: "SETUP",
         sec_inst_t: "Two ways to run",
         in1_badge: "Recommended",
         in1_t: "Standalone Windows EXE",
-        in1_d: "Single-file executable built via PyInstaller — no Python installation required.",
+        in1_d: "Single-file executable built via PyInstaller, no Python installation required.",
         in1_s1: "Download the latest release binary from GitHub Releases above.",
         in1_s2: "Run as Administrator so Windows allows DirectInput scan codes over Fortnite.",
         in1_s3: "Adjust 180° camera turn pixels to match your sensitivity and press F6 in-game (F7 to stop).",
@@ -1053,8 +1053,8 @@ python tests\test_pirate_farm.py</pre>
         if (dict[key]) {
           if (key === "release_loading") {
             el.textContent = currentLang === "ru"
-              ? `Релиз: ${latestReleaseTag} · Автосборка GitHub Actions`
-              : `Release: ${latestReleaseTag} · Built on GitHub Actions`;
+              ? `Релиз ${latestReleaseTag}, сборка GitHub Actions`
+              : `Release ${latestReleaseTag}, GitHub Actions build`;
           } else {
             el.textContent = dict[key];
           }
