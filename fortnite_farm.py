@@ -399,7 +399,7 @@ TEXT = {
         "m2_title": "2. Полный цикл через лобби",
         "m2_desc": "Играть → ожидание таймера → выход в лобби → новый старт",
         "m0_title": "3. Только Анти-АФК (без поиска кнопок)",
-        "m0_desc": "Отключает игровой цикл и запускает только имитацию игрока",
+        "m0_desc": "Отключает игровой цикл и запускает только Анти-АФК",
         "params_title": "Параметры метода",
         "delay_title": "Таймер цикла (Метод 2)",
         "delay_desc": "Случайная пауза перед выходом в лобби, в минутах",
@@ -409,7 +409,7 @@ TEXT = {
         "afk_safety": "Только ввод клавиатуры и мыши",
         "imm_title": "Сразу запускать Анти-АФК",
         "imm_desc": "Не ждать экран «Подключение…» перед началом движений",
-        "human_title": "Режим «Слабый игрок»",
+        "human_title": "Анти-АФК",
         "human_desc": "Стрейфы W/A/S/D, подкаты, приседания, увороты A–D, осмотр ПКМ и камера",
         "swing_title": "Удары киркой (ЛКМ)",
         "swing_desc": "Случайные взмахи или серия ударов во время фарма",
@@ -447,7 +447,7 @@ TEXT = {
         "dt_slide_jump": "Подкат с прыжком",
         "dt_wiggle": "Уворот стрейфами A–D",
         "dt_rmb_peek": "Короткий осмотр (ПКМ)",
-        "dt_strafe": "Слабый игрок: {keys}",
+        "dt_strafe": "Анти-АФК: {keys}",
         "dt_walk_go": "Ходьба вперёд",
         "dt_walk_stand": "Пауза ~20 с на месте",
         "dt_walk_turn": "Разворот камеры ~180°",
@@ -485,7 +485,7 @@ TEXT = {
         "fb_on": "Запасной «Играть» вкл",
         "fb_off": "Запасной «Играть» выкл",
         "err_notfound": "Не найден шаблон в папке templates/: ",
-        "err_afk_req": "Включите хотя бы одну опцию Анти-АФК (кирка, прыжок, движение или «Слабый игрок»).",
+        "err_afk_req": "Включите хотя бы одну опцию в разделе Анти-АФК.",
         "err_key_same": "Эта клавиша уже назначена для другого действия.",
         "err_key_res": "Нельзя назначить игровую клавишу (W/A/S/D/Space/Shift/Ctrl/Esc/E).",
         "log_key_set": "Назначена горячая клавиша: ",
@@ -504,7 +504,7 @@ TEXT = {
         "m2_title": "2. Full lobby cycle",
         "m2_desc": "Play → wait timer → return to lobby → start again",
         "m0_title": "3. Anti-AFK only (skip menu loop)",
-        "m0_desc": "Disables queue automation and runs player movement only",
+        "m0_desc": "Disables queue automation and runs Anti-AFK movement only",
         "params_title": "Method parameters",
         "delay_title": "Cycle timer (Method 2)",
         "delay_desc": "Random delay before returning to the lobby, in minutes",
@@ -514,7 +514,7 @@ TEXT = {
         "afk_safety": "Keyboard & mouse input only",
         "imm_title": "Start Anti-AFK immediately",
         "imm_desc": "Begin movement right away without waiting for Connecting…",
-        "human_title": "Casual Player mode",
+        "human_title": "Anti-AFK",
         "human_desc": "W/A/S/D strafes, sprint-slides, crouch-peeks, AD wiggles & camera look",
         "swing_title": "Pickaxe swings (LMB)",
         "swing_desc": "Random pickaxe swings or short combos during farming",
@@ -552,7 +552,7 @@ TEXT = {
         "dt_slide_jump": "Slide-hop combo",
         "dt_wiggle": "AD dodge wiggle",
         "dt_rmb_peek": "Brief ADS peek (RMB)",
-        "dt_strafe": "Casual move: {keys}",
+        "dt_strafe": "Anti-AFK: {keys}",
         "dt_walk_go": "Walking forward",
         "dt_walk_stand": "Pausing ~20 s",
         "dt_walk_turn": "Turning ~180°",
@@ -590,7 +590,7 @@ TEXT = {
         "fb_on": "Fallback Play on",
         "fb_off": "Fallback Play off",
         "err_notfound": "Missing template inside templates/: ",
-        "err_afk_req": "Enable at least one Anti-AFK option (Pickaxe, Jump, Movement or Casual Player).",
+        "err_afk_req": "Enable at least one option in the Anti-AFK section.",
         "err_key_same": "That hotkey is already assigned to the other action.",
         "err_key_res": "Cannot bind a gameplay movement key (W/A/S/D/Space/Shift/Ctrl/Esc/E).",
         "log_key_set": "Assigned hotkey: ",
@@ -881,13 +881,13 @@ class Engine:
         if self._can_act():
             ok = self.smooth_mouse_move(total_dx, total_dy, duration=dur)
             if ok and big_turn and random.random() < 0.40 and self.anti_sleep(random.uniform(0.08, 0.20)):
-                # Casual shoulder check: partial return glance toward original heading
+                # Shoulder check: partial return glance toward original heading
                 ret_dx = -int(round(total_dx * random.uniform(0.55, 0.85)))
                 ret_dy = int(clamp(-self.pitch_acc * 0.3 + random.randint(-22, 22), -55, 55))
                 self.smooth_mouse_move(ret_dx, ret_dy, duration=random.uniform(0.20, 0.34))
 
     def do_jump_swing(self) -> None:
-        """Casual mid-air jump + aim flick + pickaxe swing combo."""
+        """Mid-air jump + aim flick + pickaxe swing combo."""
         if self.mouse_down or self.app.live("mouse") or not self._can_act():
             return
         self.app.emit("detail", {"key": "dt_jump_swing"})
@@ -1274,7 +1274,7 @@ class Engine:
                                 self.tap_key("space", hold_s=random.uniform(0.055, 0.10))
                         self.next_space = time.monotonic() + self._next_rhythm_delay(2.4, 10.5)
 
-                    # 3. Casual Player camera look, micro-drift & non-periodic tactical maneuvers
+                    # 3. Anti-AFK camera look, micro-drift & non-periodic tactical maneuvers
                     if use_human:
                         now = time.monotonic()
                         is_standing = (wstate == "stand")

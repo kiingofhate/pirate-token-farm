@@ -284,12 +284,16 @@ class TestAppAndUI(unittest.TestCase):
             ru_val = ff.TEXT["ru"][k]
             en_val = ff.TEXT["en"][k]
             self.assertTrue(ru_val and en_val, f"Empty string for key {k}")
+            self.assertNotIn("слаб", ru_val.lower(), f"Unexpected legacy phrase in ru[{k}]")
+            self.assertNotIn("casual", en_val.lower(), f"Unexpected legacy phrase in en[{k}]")
             if "{m}" in ru_val or "{m}" in en_val:
                 self.assertEqual(ru_val.format(m=5)[:0], "")
                 self.assertEqual(en_val.format(m=5)[:0], "")
             if "{keys}" in ru_val or "{keys}" in en_val:
                 self.assertEqual(ru_val.format(keys="W+A")[:0], "")
                 self.assertEqual(en_val.format(keys="W+A")[:0], "")
+        self.assertEqual(ff.TEXT["ru"]["human_title"], "Анти-АФК")
+        self.assertEqual(ff.TEXT["en"]["human_title"], "Anti-AFK")
 
     def test_saved_anim_setting_preserved_when_system_reduced_motion_enabled(self):
         self.tmp_cfg.write_text(json.dumps({"anim": True}), encoding="utf-8")
@@ -707,8 +711,8 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
             if self.engine.anti_thread is not None:
                 self.assertFalse(self.engine.anti_thread.is_alive())
 
-    def test_casual_player_strafes_with_walk_disabled(self):
-        # User's saved config has human=True and walk=False: Casual Player must still strafe WASD
+    def test_anti_afk_strafes_with_walk_disabled(self):
+        # User's saved config has human=True and walk=False: Anti-AFK must still strafe WASD
         self.app.set_cfg("method", 0)
         self.app.set_cfg("immediate", True)
         self.app.set_cfg("human", True)
