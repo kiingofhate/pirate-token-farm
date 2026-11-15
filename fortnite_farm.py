@@ -308,9 +308,16 @@ def send_mouse_button(down: bool, button: str = "left") -> None:
         user32.mouse_event(flag, 0, 0, 0, 0)
 
 
+def set_cursor_pos(x: int, y: int) -> None:
+    """Move OS cursor to exact desktop screen coordinates (skipped in headless test runner)."""
+    if os.environ.get("PIRATE_HEADLESS") == "1":
+        return
+    user32.SetCursorPos(int(x), int(y))
+
+
 def click_screen_pos(x: int, y: int) -> None:
     """Move cursor to exact desktop screen coordinates (multi-monitor safe) and left-click."""
-    user32.SetCursorPos(int(x), int(y))
+    set_cursor_pos(int(x), int(y))
     time.sleep(0.04)
     send_mouse_button(True)
     time.sleep(0.05)
@@ -336,6 +343,34 @@ def active_fortnite_hwnd(allow_any_window: bool = False) -> int | None:
         cbuf = ctypes.create_unicode_buffer(128)
         if user32.GetClassNameW(hwnd, cbuf, 128):
             if "unrealwindow" in cbuf.value.lower():
+                return int(hwnd)
+    except Exception:
+        pass
+    return None
+
+
+def is_window_minimized(hwnd: int | None) -> bool:
+    """Return True when a valid window handle is minimized (iconic)."""
+    if not hwnd:
+        return False
+    try:
+        return bool(user32.IsIconic(int(hwnd)))
+    except Exception:
+        return False
+
+
+def find_fortnite_hwnd() -> int | None:
+    """Find top-level Fortnite UnrealWindow handle even when minimized or in background."""
+    if os.environ.get("PIRATE_HEADLESS") == "1":
+        return None
+    try:
+        hwnd = user32.FindWindowW("UnrealWindow", None)
+        if hwnd:
+            n = user32.GetWindowTextLengthW(hwnd)
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(hwnd, buf, n + 1)
+            title = buf.value.lower()
+            if "pirate token farm" not in title and ("fortnite" in title or not title):
                 return int(hwnd)
     except Exception:
         pass
@@ -527,6 +562,8 @@ TEXT = {
         "log_key_set": "Назначена горячая клавиша: ",
         "log_error": "Ошибка: ",
         "log_retry_esc": "Меню не открылось · повторный Esc",
+        "dt_fn_minimized": "Окно Fortnite свёрнуто · автофарм остановлен",
+        "log_fn_minimized": "Окно Fortnite свёрнуто или неактивно · автофарм остановлен",
     },
     "en": {
         "sub": "Fortnite Farming & Anti-AFK Assistant",
@@ -638,6 +675,8 @@ TEXT = {
         "log_key_set": "Assigned hotkey: ",
         "log_error": "Error: ",
         "log_retry_esc": "Menu missed · retrying Esc",
+        "dt_fn_minimized": "Fortnite minimized · autofarm stopped",
+        "log_fn_minimized": "Fortnite window minimized or unfocused · autofarm stopped",
     },
 }
 
@@ -818,7 +857,7 @@ class Engine:
 
         now = time.monotonic()
         self.next_space = now + random.uniform(1.8, 5.0)
-        self.next_swing = now + random.uniform(2.2, 6.0)
+        self.next_swing = now + random.uniform(6.0, 10.0)
         self.next_look = now + random.uniform(1.2, 3.2)
         self.next_idle_drift = now + random.uniform(1.6, 4.2)
         self.next_crouch = now + random.uniform(11.0, 26.0)
@@ -826,6 +865,13 @@ class Engine:
         self.next_wiggle = now + random.uniform(9.5, 22.0)
         self.next_rmb_peek = now + random.uniform(12.0, 28.0)
         self.next_strafe = now + random.uniform(3.5, 7.5)
+        self.lmb_safe_after = 0.0
+        self.next_recenter = now
+        self._last_button_click_ts: dict[str, float] = {}
+        self._ever_focused = False
+        self._last_target_hwnd: int | None = None
+        self._monitor_focus_loss = False
+        self._focus_loss_logged = False
         self.anti_thread: threading.Thread | None = None
         self._busy_lock = threading.Lock()
         self._busy_count = 0
@@ -841,9 +887,53 @@ class Engine:
             if self._busy_count == 0:
                 self.busy.clear()
 
+    def _stop_due_to_window_state(self) -> None:
+        """Immediately release all held inputs and stop autofarm when Fortnite is minimized or loses focus."""
+        self.release_all()
+        if not self._focus_loss_logged:
+            self._focus_loss_logged = True
+            self.app.emit("detail", {"key": "dt_fn_minimized"})
+            self.app.emit("log", {"key": "log_fn_minimized"})
+        self.stop.set()
+
+    def check_target_window_active(self) -> bool:
+        """Return True if target window is active; auto-stop if Fortnite is minimized or loses focus after active."""
+        if self.stop.is_set():
+            return False
+        if self.is_target_focused():
+            hwnd = self.active_hwnd()
+            if hwnd:
+                self._last_target_hwnd = hwnd
+                if is_window_minimized(hwnd):
+                    self._stop_due_to_window_state()
+                    return False
+            self._ever_focused = True
+            return True
+        if is_window_minimized(self._last_target_hwnd):
+            self._stop_due_to_window_state()
+            return False
+        if not self.app.live("any_win"):
+            fn_hwnd = find_fortnite_hwnd()
+            if fn_hwnd and is_window_minimized(fn_hwnd) and (self._ever_focused or self._monitor_focus_loss):
+                self._stop_due_to_window_state()
+                return False
+        if self._ever_focused or self._monitor_focus_loss:
+            self._stop_due_to_window_state()
+            return False
+        return False
+
+    def center_cursor(self) -> tuple[int, int]:
+        """Place OS cursor at exact center of target monitor so it never touches top map, bottom notifications, or Play/Cancel."""
+        mon = self.current_monitor()
+        cx = int(mon["left"]) + int(mon["width"]) // 2
+        cy = int(mon["top"]) + int(mon["height"]) // 2
+        if self.is_target_focused() and not self.stop.is_set():
+            set_cursor_pos(cx, cy)
+        return cx, cy
+
     def _can_act(self) -> bool:
         """Return True when automation is active, not clicking UI, and target window is focused."""
-        return not self.stop.is_set() and not self.busy.is_set() and self.is_target_focused()
+        return not self.stop.is_set() and not self.busy.is_set() and self.check_target_window_active()
 
     @staticmethod
     def _next_rhythm_delay(min_s: float, max_s: float, burst_chance: float = 0.22) -> float:
@@ -950,35 +1040,33 @@ class Engine:
     def anti_sleep(self, seconds: float) -> bool:
         end = time.monotonic() + seconds
         while time.monotonic() < end:
-            if self.stop.is_set() or self.busy.is_set() or not self.is_target_focused():
+            if self.stop.is_set() or self.busy.is_set() or not self.check_target_window_active():
                 return False
             time.sleep(min(0.02, max(0.002, end - time.monotonic())))
         return True
 
     def smooth_mouse_move(self, total_dx: int, total_dy: int = 0, duration: float = 0.42) -> bool:
+        if self.stop.is_set() or self.busy.is_set() or not self.check_target_window_active():
+            return False
+        self.center_cursor()
         steps = max(10, int(round(duration / 0.012)))
         done_x = 0
-        done_y = 0
         for i in range(1, steps + 1):
-            if self.stop.is_set() or self.busy.is_set() or not self.is_target_focused():
+            if self.stop.is_set() or self.busy.is_set() or not self.check_target_window_active():
                 return False
             t = i / steps
             ease = 0.5 * (1.0 - math.cos(math.pi * t))
             tx = round(total_dx * ease)
-            ty = round(total_dy * ease)
             if i < steps - 1:
                 tx += random.randint(-1, 1)
-                ty += random.randint(-1, 1)
             dx = tx - done_x
-            dy = ty - done_y
             done_x = tx
-            done_y = ty
-            if dx or dy:
+            if dx:
                 with self.lock:
-                    if self.busy.is_set() or self.stop.is_set() or not self.is_target_focused():
+                    if self.busy.is_set() or self.stop.is_set() or not self.check_target_window_active():
                         return False
-                    send_mouse_rel(dx, dy)
-                    self.pitch_acc = int(clamp(self.pitch_acc + dy, -350, 350))
+                    send_mouse_rel(dx, 0)
+                    self.pitch_acc = 0
             time.sleep(random.uniform(0.009, 0.015))
         return True
 
@@ -988,25 +1076,25 @@ class Engine:
         direction = random.choice((-1, 1)) if human_on else 1
         scale = random.uniform(0.68, 1.24) if human_on else random.uniform(0.88, 1.12)
         total = int(round(base * scale)) * direction
-        dy = int(clamp(-self.pitch_acc * 0.5 + random.randint(-45, 45), -110, 110))
+        self.center_cursor()
         if human_on and random.random() < 0.30:
-            # Split turn mimics human mouse lift / reset mid-swipe
+            # Split turn mimics human mouse lift / reset mid-swipe while staying strictly horizontal
             part1 = int(round(total * random.uniform(0.45, 0.65)))
             part2 = total - part1
-            if self.smooth_mouse_move(part1, dy // 2, duration=random.uniform(0.18, 0.28)):
+            if self.smooth_mouse_move(part1, 0, duration=random.uniform(0.18, 0.28)):
                 if self.anti_sleep(random.uniform(0.06, 0.14)):
-                    self.smooth_mouse_move(part2, dy - dy // 2, duration=random.uniform(0.16, 0.28))
+                    self.smooth_mouse_move(part2, 0, duration=random.uniform(0.16, 0.28))
             return
-        self.smooth_mouse_move(total, dy, duration=random.uniform(0.36, 0.58))
+        self.smooth_mouse_move(total, 0, duration=random.uniform(0.36, 0.58))
 
     def idle_micro_fidget(self) -> None:
-        """Apply subtle organic crosshair micro-drift so aim never freezes robotically."""
+        """Apply subtle organic horizontal crosshair micro-drift along screen center."""
         if not self._can_act():
             return
+        self.center_cursor()
         dx = random.randint(8, 36) * random.choice((-1, 1))
-        dy = int(clamp(-self.pitch_acc * random.uniform(0.15, 0.35) + random.randint(-14, 14), -38, 38))
         self.app.emit("detail", {"key": "dt_idle_look"})
-        self.smooth_mouse_move(dx, dy, duration=random.uniform(0.14, 0.28))
+        self.smooth_mouse_move(dx, 0, duration=random.uniform(0.14, 0.28))
 
     def human_look(self) -> None:
         base = max(100, int(self.app.live("turn_px")))
@@ -1015,22 +1103,22 @@ class Engine:
         frac = random.uniform(0.45, 0.96) if big_turn else random.uniform(0.07, 0.36)
         direction = random.choice((-1, 1))
         total_dx = int(round(base * frac)) * direction
-        pitch_pull = int(-self.pitch_acc * random.uniform(0.45, 0.75))
-        total_dy = int(clamp(pitch_pull + random.randint(-85, 85), -150, 150))
+        self.pitch_acc = 0
         dur = random.uniform(0.30, 0.54) if big_turn else random.uniform(0.16, 0.34)
         self.app.emit("detail", {"key": "dt_look"})
         if self._can_act():
-            ok = self.smooth_mouse_move(total_dx, total_dy, duration=dur)
+            self.center_cursor()
+            ok = self.smooth_mouse_move(total_dx, 0, duration=dur)
             if ok and big_turn and random.random() < 0.40 and self.anti_sleep(random.uniform(0.08, 0.20)):
-                # Shoulder check: partial return glance toward original heading
+                # Shoulder check: partial horizontal return glance toward original heading
                 ret_dx = -int(round(total_dx * random.uniform(0.55, 0.85)))
-                ret_dy = int(clamp(-self.pitch_acc * 0.3 + random.randint(-22, 22), -55, 55))
-                self.smooth_mouse_move(ret_dx, ret_dy, duration=random.uniform(0.20, 0.34))
+                self.smooth_mouse_move(ret_dx, 0, duration=random.uniform(0.20, 0.34))
 
     def do_jump_swing(self) -> None:
-        """Mid-air jump + aim flick + pickaxe swing combo."""
+        """Mid-air jump + horizontal aim flick + pickaxe swing combo."""
         if self.mouse_down or self.app.live("mouse") or not self._can_act():
             return
+        self.center_cursor()
         self.app.emit("detail", {"key": "dt_jump_swing"})
         self.app.emit("log", {"key": "dt_jump_swing"})
         try:
@@ -1041,12 +1129,14 @@ class Engine:
                 return
             with self.lock:
                 if self._can_act():
-                    send_mouse_rel(random.randint(-36, 36), random.randint(-10, 14))
+                    self.center_cursor()
+                    send_mouse_rel(random.randint(-36, 36), 0)
             self.mouse_hold_set(True)
             ok = self.anti_sleep(random.uniform(0.08, 0.16))
             self.mouse_hold_set(False)
             if ok and random.random() < 0.45 and self.anti_sleep(random.uniform(0.26, 0.42)):
                 if self._can_act():
+                    self.center_cursor()
                     self.mouse_hold_set(True)
                     self.anti_sleep(random.uniform(0.07, 0.13))
                     self.mouse_hold_set(False)
@@ -1064,6 +1154,7 @@ class Engine:
             if had_shift:
                 self.key_up("shift")
 
+        self.center_cursor()
         self.app.emit("detail", {"key": "dt_swing"})
         self.app.emit("log", {"key": "dt_swing"})
         mode = random.random()
@@ -1072,17 +1163,19 @@ class Engine:
                 with self.lock:
                     if not self._can_act():
                         return
+                self.center_cursor()
                 self.mouse_hold_set(True)
                 self.anti_sleep(random.uniform(0.08, 0.16))
                 self.mouse_hold_set(False)
                 if random.random() < 0.5 and self._can_act():
                     with self.lock:
-                        send_mouse_rel(random.randint(-28, 28), random.randint(-12, 12))
+                        send_mouse_rel(random.randint(-28, 28), 0)
             elif mode < 0.76:
                 hits = random.choice((2, 2, 3))
                 for idx in range(hits):
                     if not self._can_act():
                         break
+                    self.center_cursor()
                     self.mouse_hold_set(True)
                     ok = self.anti_sleep(random.uniform(0.07, 0.13))
                     self.mouse_hold_set(False)
@@ -1093,13 +1186,14 @@ class Engine:
                             self.tap_key(random.choice(("a", "d")), hold_s=random.uniform(0.09, 0.18))
                         if random.random() < 0.65 and self._can_act():
                             with self.lock:
-                                send_mouse_rel(random.randint(-22, 22), random.randint(-8, 8))
+                                send_mouse_rel(random.randint(-22, 22), 0)
                         if not self.anti_sleep(random.uniform(0.32, 0.56)):
                             break
             else:
                 with self.lock:
                     if not self._can_act():
                         return
+                self.center_cursor()
                 self.mouse_hold_set(True)
                 self.anti_sleep(random.uniform(0.65, 1.35))
                 self.mouse_hold_set(False)
@@ -1113,6 +1207,7 @@ class Engine:
         """Sprint forward into a curved Fortnite slide with optional slide-hop exit."""
         if not self._can_act():
             return False
+        self.center_cursor()
         self.app.emit("detail", {"key": "dt_slide"})
         if random.random() < 0.45:
             self.app.emit("log", {"key": "dt_slide"})
@@ -1123,15 +1218,14 @@ class Engine:
             if self._can_act() and random.random() < 0.60:
                 base = max(100, int(self.app.live("turn_px")))
                 drift = int(round(base * random.uniform(0.04, 0.12))) * random.choice((-1, 1))
-                if not self.smooth_mouse_move(drift, random.randint(-12, 14), duration=random.uniform(0.16, 0.26)):
+                if not self.smooth_mouse_move(drift, 0, duration=random.uniform(0.16, 0.26)):
                     return True
 
             # Initiate slide while holding W+Shift, then ease out of Shift into slide glide
             self.tap_key("ctrl", hold_s=random.uniform(0.06, 0.10))
             self.set_move_keys({"w"})
             slide_dx = random.randint(45, 165) * random.choice((-1, 1))
-            slide_dy = random.randint(12, 38)
-            if not self.smooth_mouse_move(slide_dx, slide_dy, duration=random.uniform(0.24, 0.44)):
+            if not self.smooth_mouse_move(slide_dx, 0, duration=random.uniform(0.24, 0.44)):
                 return True
             if not self.anti_sleep(random.uniform(0.18, 0.34)):
                 return True
@@ -1155,9 +1249,10 @@ class Engine:
         return True
 
     def do_combat_wiggle(self) -> bool:
-        """Rapid alternating left/right strafe dodge with counter-aim ticks."""
+        """Rapid alternating left/right strafe dodge with horizontal counter-aim ticks."""
         if not self._can_act():
             return False
+        self.center_cursor()
         self.app.emit("detail", {"key": "dt_wiggle"})
         side = random.choice((-1, 1))
         steps = random.randint(3, 5)
@@ -1173,7 +1268,7 @@ class Engine:
                 if random.random() < 0.70 and self._can_act():
                     with self.lock:
                         if self._can_act():
-                            send_mouse_rel(-side * random.randint(10, 32), random.randint(-8, 10))
+                            send_mouse_rel(-side * random.randint(10, 32), 0)
                 if not self.anti_sleep(random.uniform(0.12, 0.28)):
                     break
                 if idx < steps - 1 and random.random() < 0.28:
@@ -1192,6 +1287,7 @@ class Engine:
         """Toggle crouch cleanly with either brief cover strafe or double crouch-peek."""
         if not self._can_act():
             return False
+        self.center_cursor()
         if "shift" in self.held_keys:
             self.set_move_keys(self.held_keys - {"shift"})
         did_move = False
@@ -1206,7 +1302,7 @@ class Engine:
                 self.set_move_keys(set(strafe_keys))
                 ok = self.smooth_mouse_move(
                     random.randint(35, 95) * random.choice((-1, 1)),
-                    random.randint(-14, 18),
+                    0,
                     duration=random.uniform(0.22, 0.38),
                 )
                 if ok:
@@ -1237,15 +1333,15 @@ class Engine:
         return did_move
 
     def do_rmb_peek(self) -> None:
-        """Brief harmless right-click aim/ADS glance paired with fine camera tracking."""
+        """Brief harmless right-click aim/ADS glance paired with horizontal camera tracking."""
         if self.mouse_down or self.app.live("mouse") or not self._can_act():
             return
+        self.center_cursor()
         self.app.emit("detail", {"key": "dt_rmb_peek"})
         try:
             self.rmb_hold_set(True)
             dx = random.randint(24, 96) * random.choice((-1, 1))
-            dy = random.randint(-28, 28)
-            ok = self.smooth_mouse_move(dx, dy, duration=random.uniform(0.18, 0.36))
+            ok = self.smooth_mouse_move(dx, 0, duration=random.uniform(0.18, 0.36))
             if ok:
                 self.anti_sleep(random.uniform(0.06, 0.16))
         finally:
@@ -1253,8 +1349,14 @@ class Engine:
 
     def click(self, name: str, label: str, timeout: float | None = None) -> bool:
         start = time.monotonic()
+        is_lobby_play = name in ("play_button", "play_again")
         while not self.stop.is_set():
-            if not self.is_target_focused():
+            if not self.check_target_window_active():
+                if self.stop.is_set() or (timeout is not None and (time.monotonic() - start) >= timeout):
+                    return False
+                time.sleep(0.2)
+                continue
+            if is_lobby_play and (time.monotonic() - self._last_button_click_ts.get(name, -999.0)) < 6.0:
                 if timeout is not None and (time.monotonic() - start) >= timeout:
                     return False
                 time.sleep(0.2)
@@ -1267,6 +1369,22 @@ class Engine:
                 continue
             _, box = self.matcher.find(gray, name, stop_event=self.stop)
             if box is not None:
+                if name == "play_button":
+                    # Move cursor to center first and verify Play did not just switch to Cancel from a manual click
+                    self.center_cursor()
+                    time.sleep(0.30)
+                    if self.stop.is_set() or not self.check_target_window_active():
+                        return False
+                    gray2 = self.frame()
+                    if gray2 is None:
+                        continue
+                    _, box2 = self.matcher.find(gray2, name, stop_event=self.stop)
+                    if box2 is None:
+                        if timeout is not None and (time.monotonic() - start) >= timeout:
+                            return False
+                        time.sleep(0.16)
+                        continue
+                    box = box2
                 x, y, w, h = box
                 px = self.monitor["left"] + x + w // 2
                 py = self.monitor["top"] + y + h // 2
@@ -1274,9 +1392,15 @@ class Engine:
                 try:
                     clicked = False
                     with self.lock:
-                        if self.is_target_focused():
+                        if self.check_target_window_active():
                             self.release_all()
                             click_screen_pos(px, py)
+                            time.sleep(0.05)
+                            self.center_cursor()
+                            now_click = time.monotonic()
+                            self._last_button_click_ts[name] = now_click
+                            self.lmb_safe_after = max(self.lmb_safe_after, now_click + 7.5)
+                            self.next_swing = max(self.next_swing, now_click + random.uniform(7.5, 11.0))
                             self.app.emit("detail", f"{self.app.tr('dt_clicked')}{label}")
                             self.app.emit("log", f"{self.app.tr('dt_clicked')}{label}")
                             clicked = True
@@ -1329,6 +1453,8 @@ class Engine:
         action_visible = False
 
         try:
+            if self.is_target_focused() and not self.busy.is_set():
+                self.center_cursor()
             with mss.MSS() as local_cap:
                 while not self.stop.is_set():
                     use_imm = bool(self.app.live("immediate"))
@@ -1348,6 +1474,13 @@ class Engine:
                     if self.busy.is_set():
                         self.release_all()
                         time.sleep(0.08)
+                        continue
+
+                    if not self.check_target_window_active():
+                        self.release_all()
+                        if self.stop.is_set():
+                            break
+                        time.sleep(0.16)
                         continue
 
                     now = time.monotonic()
@@ -1382,6 +1515,10 @@ class Engine:
 
                     if action_visible:
                         self.release_all()
+                        self.center_cursor()
+                        now_vis = time.monotonic()
+                        self.lmb_safe_after = max(self.lmb_safe_after, now_vis + 7.0)
+                        self.next_swing = max(self.next_swing, now_vis + random.uniform(7.0, 10.5))
                         if not use_imm and method != 0:
                             afk_active = False
                             blocked_until_reconnect = True
@@ -1392,19 +1529,30 @@ class Engine:
                         afk_active = True
                         blocked_until_reconnect = False
 
-                    if not afk_active or blocked_until_reconnect or not self.is_target_focused():
+                    if not afk_active or blocked_until_reconnect or not self.check_target_window_active():
                         self.release_all()
+                        if self.stop.is_set():
+                            break
                         time.sleep(0.16)
                         continue
 
-                    # 1. Pickaxe hold or randomized human swings
-                    if use_mouse:
+                    now = time.monotonic()
+                    if now >= self.next_recenter:
+                        self.center_cursor()
+                        self.next_recenter = now + 1.2
+
+                    # 1. Pickaxe hold or randomized human swings (guarded by lmb_safe_after & centered cursor)
+                    if now < self.lmb_safe_after:
+                        self.mouse_hold_set(False)
+                    elif use_mouse:
                         if not self.mouse_down:
+                            self.center_cursor()
                             self.mouse_hold_set(True)
                             self.app.emit("detail", {"key": "dt_mouse_hold"})
                     else:
                         self.mouse_hold_set(False)
                         if use_swing and now >= self.next_swing:
+                            self.center_cursor()
                             self.do_pickaxe_swing(allow_jump=use_space)
                             self.next_swing = time.monotonic() + self._next_rhythm_delay(2.8, 10.5)
 
@@ -1541,7 +1689,9 @@ class Engine:
         self.app.emit("status", "running")
         self.app.emit("detail", {"key": "dt_method1"})
         while not self.stop.is_set():
-            if not self.is_target_focused():
+            if not self.check_target_window_active():
+                if self.stop.is_set():
+                    break
                 time.sleep(0.25)
                 continue
             gray = self.frame()
@@ -1553,11 +1703,19 @@ class Engine:
             if again is None and self.app.live("safe"):
                 _, play = self.matcher.find(gray, "play_button")
             if again is not None:
-                if self.click("play_again", "Play Again", timeout=3.0):
-                    self.wait(7.5)
+                self.enter_busy()
+                try:
+                    if self.click("play_again", "Play Again", timeout=3.0):
+                        self.wait(7.5)
+                finally:
+                    self.exit_busy()
             elif play is not None:
-                if self.click("play_button", "Play", timeout=3.0):
-                    self.wait(7.5)
+                self.enter_busy()
+                try:
+                    if self.click("play_button", "Play", timeout=3.0):
+                        self.wait(7.5)
+                finally:
+                    self.exit_busy()
             time.sleep(0.25)
 
     def method2(self) -> None:
@@ -1572,6 +1730,9 @@ class Engine:
                 lo, hi = hi, lo
             end = time.monotonic() + random.uniform(lo * 60.0, hi * 60.0)
             while not self.stop.is_set() and time.monotonic() < end:
+                if not self.check_target_window_active():
+                    if self.stop.is_set():
+                        break
                 rem_min = max(1, int(math.ceil((end - time.monotonic()) / 60.0)))
                 self.app.emit("detail", {"key": "dt_waiting", "m": rem_min})
                 time.sleep(0.5)
@@ -1582,7 +1743,7 @@ class Engine:
             try:
                 with self.lock:
                     self.release_all()
-                    if self.is_target_focused():
+                    if self.check_target_window_active():
                         send_key_hw("esc", True)
                         time.sleep(0.08)
                         send_key_hw("esc", False)
@@ -1593,7 +1754,7 @@ class Engine:
                         break
                     self.app.emit("log", {"key": "log_retry_esc"})
                     with self.lock:
-                        if self.is_target_focused():
+                        if self.check_target_window_active():
                             self.tap_key("esc", hold_s=0.08)
                     if not self.click("menu_button", "Menu", timeout=15.0):
                         continue
@@ -1606,6 +1767,8 @@ class Engine:
     def wait(self, seconds: float) -> None:
         end = time.monotonic() + seconds
         while not self.stop.is_set() and time.monotonic() < end:
+            if self._ever_focused and not self.check_target_window_active():
+                break
             time.sleep(0.1)
 
     def run(self, method: int) -> None:
@@ -1615,6 +1778,14 @@ class Engine:
             self.wait(2.0 if method == 0 else 3.0)
             if self.stop.is_set():
                 return
+
+            now_start = time.monotonic()
+            self.lmb_safe_after = max(self.lmb_safe_after, now_start + 6.5)
+            self.next_swing = max(self.next_swing, now_start + random.uniform(6.5, 10.5))
+            if self.is_target_focused():
+                self._ever_focused = True
+                self._monitor_focus_loss = True
+                self.center_cursor()
 
             self.anti_thread = threading.Thread(target=self.anti_loop, daemon=True)
             self.anti_thread.start()
@@ -1633,7 +1804,12 @@ class Engine:
                 if self.app.live("mouse"):
                     part_keys.append("m0_part_mouse")
                 self.app.emit("detail", {"key": "dt_m0_summary", "parts": part_keys})
+                grace_deadline = time.monotonic() + 3.0
                 while not self.stop.is_set():
+                    if time.monotonic() >= grace_deadline:
+                        self._monitor_focus_loss = True
+                    if not self.check_target_window_active() and self.stop.is_set():
+                        break
                     time.sleep(0.25)
             elif method == 1:
                 self.method1()

@@ -1052,6 +1052,97 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
             "Анти-АФК + Кирка",
         )
 
+    def test_play_button_no_accidental_double_click_and_cursor_recentered(self):
+        tpl = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "play_button.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        gray_with_play = np.full((600, 800), 25, dtype=np.uint8)
+        gray_with_play[100:100 + tpl.shape[0], 200:200 + tpl.shape[1]] = tpl
+        gray_cancel = np.full((600, 800), 25, dtype=np.uint8)
+
+        self.engine.monitor = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+
+        # 1. If user just clicked Play manually and button turns into Cancel during 0.30s check, do NOT click a second time
+        frames = [gray_with_play, gray_cancel]
+        with patch.object(self.engine, "is_target_focused", return_value=True), \
+             patch.object(self.engine, "frame", side_effect=lambda *a: frames.pop(0) if frames else gray_cancel), \
+             patch.object(ff, "click_screen_pos") as m_click, \
+             patch.object(ff, "set_cursor_pos") as m_center, \
+             patch.object(time, "sleep"):
+            ok = self.engine.click("play_button", "Play", timeout=0.01)
+            self.assertFalse(ok)
+            m_click.assert_not_called()
+            m_center.assert_called_with(960, 540)
+
+        # 2. When Play stays visible, click once, recenter cursor to (960, 540), and block rapid second click
+        center_calls = []
+        with patch.object(self.engine, "is_target_focused", return_value=True), \
+             patch.object(self.engine, "frame", return_value=gray_with_play), \
+             patch.object(ff, "click_screen_pos") as m_click, \
+             patch.object(ff, "set_cursor_pos", side_effect=lambda x, y: center_calls.append((x, y))), \
+             patch.object(time, "sleep"):
+            ok1 = self.engine.click("play_button", "Play", timeout=0.5)
+            self.assertTrue(ok1)
+            m_click.assert_called_once()
+            self.assertEqual(center_calls[-1], (960, 540))
+            self.assertGreater(self.engine.lmb_safe_after, time.monotonic() + 5.0)
+
+            # Immediate second click attempt within 6s cooldown must be refused
+            ok2 = self.engine.click("play_button", "Play", timeout=0.01)
+            self.assertFalse(ok2)
+            self.assertEqual(m_click.call_count, 1)
+
+    def test_all_mouse_movements_strictly_horizontal_and_centered(self):
+        rel_moves = []
+        center_positions = []
+        self.engine.monitor = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        with patch.object(self.engine, "is_target_focused", return_value=True), \
+             patch.object(self.engine, "current_monitor", return_value=self.engine.monitor), \
+             patch.object(ff, "send_mouse_rel", side_effect=lambda dx, dy: rel_moves.append((dx, dy))), \
+             patch.object(ff, "set_cursor_pos", side_effect=lambda x, y: center_positions.append((x, y))), \
+             patch.object(ff, "send_key_hw"), \
+             patch.object(ff, "send_mouse_button"), \
+             patch.object(self.engine, "anti_sleep", return_value=True), \
+             patch.object(time, "sleep"):
+            self.engine.smooth_mouse_move(120, 85, duration=0.12)
+            self.engine.turn_around()
+            self.engine.human_look()
+            self.engine.idle_micro_fidget()
+            self.engine.do_jump_swing()
+            self.engine.do_pickaxe_swing(allow_jump=False)
+            self.engine.do_slide_burst(allow_jump=True)
+            self.engine.do_combat_wiggle()
+            self.engine.do_crouch_peek(allow_strafe=True)
+            self.engine.do_rmb_peek()
+
+        self.assertTrue(rel_moves, "Expected horizontal mouse movements")
+        self.assertTrue(all(dy == 0 for _, dy in rel_moves), f"Found non-zero vertical mouse move: {rel_moves}")
+        self.assertTrue(center_positions, "Expected cursor centering calls")
+        self.assertTrue(all(pos == (960, 540) for pos in center_positions), f"Unexpected center coords: {center_positions}")
+
+    def test_autofarm_stops_automatically_when_fortnite_minimized_or_unfocused(self):
+        emitted = []
+        focus_states = [True, True, False]
+
+        def fake_focus():
+            return focus_states.pop(0) if focus_states else False
+
+        with patch.object(self.app, "emit", side_effect=lambda k, p: emitted.append((k, p))), \
+             patch.object(self.engine, "is_target_focused", side_effect=fake_focus), \
+             patch.object(ff, "send_key_hw"), \
+             patch.object(ff, "send_mouse_button"):
+            self.engine.key_down("w")
+            self.engine.mouse_hold_set(True)
+            self.assertTrue(self.engine.check_target_window_active())
+            self.assertTrue(self.engine._ever_focused)
+            self.assertTrue(self.engine.check_target_window_active())
+            # Now window is minimized / loses focus -> must auto-stop and release all inputs
+            self.assertFalse(self.engine.check_target_window_active())
+
+        self.assertTrue(self.engine.stop.is_set(), "Autofarm must stop when Fortnite is minimized/unfocused")
+        self.assertEqual(len(self.engine.held_keys), 0)
+        self.assertFalse(self.engine.mouse_down)
+        self.assertIn(("log", {"key": "log_fn_minimized"}), emitted)
+        self.assertIn(("detail", {"key": "dt_fn_minimized"}), emitted)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
