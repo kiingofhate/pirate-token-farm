@@ -291,6 +291,193 @@ class TestAppAndUI(unittest.TestCase):
                 self.assertEqual(ru_val.format(keys="W+A")[:0], "")
                 self.assertEqual(en_val.format(keys="W+A")[:0], "")
 
+    def test_saved_anim_setting_preserved_when_system_reduced_motion_enabled(self):
+        self.tmp_cfg.write_text(json.dumps({"anim": True}), encoding="utf-8")
+        r1 = tk.Toplevel(self.root)
+        r1.withdraw()
+        try:
+            with patch.object(ff, "HEADLESS", False), \
+                 patch.object(ff, "system_reduced_motion", return_value=True), \
+                 patch.object(ff.App, "place_window"), \
+                 patch.object(ff.App, "dark_titlebar"), \
+                 patch.object(ff.App, "bind_hotkeys"):
+                a1 = ff.App(r1)
+                self.assertTrue(a1.live("anim"))
+                a1.close()
+        finally:
+            try:
+                r1.destroy()
+            except Exception:
+                pass
+
+        self.tmp_cfg.unlink()
+        r2 = tk.Toplevel(self.root)
+        r2.withdraw()
+        try:
+            with patch.object(ff, "HEADLESS", False), \
+                 patch.object(ff, "system_reduced_motion", return_value=True), \
+                 patch.object(ff.App, "place_window"), \
+                 patch.object(ff.App, "dark_titlebar"), \
+                 patch.object(ff.App, "bind_hotkeys"):
+                a2 = ff.App(r2)
+                self.assertFalse(a2.live("anim"))
+                a2.close()
+        finally:
+            try:
+                r2.destroy()
+            except Exception:
+                pass
+
+    def _drive_anims(self, fake_clock: list[float], t_start: float) -> tuple[bool, bool]:
+        saw_mid = False
+        fake_clock[0] = t_start + 0.08
+        self.app._step_anims()
+        if self.app.anim_jobs:
+            saw_mid = True
+        fake_clock[0] = t_start + 0.30
+        self.app._step_anims()
+        return saw_mid, (not self.app.anim_running and len(self.app.anim_jobs) == 0)
+
+    def test_all_switches_including_swing_walk_safe_animate_and_idle_cleanly(self):
+        self.app.params_open = True
+        self.app.rebuild_ui(snap=True)
+        clock = [500.0]
+        with patch.object(ff.time, "monotonic", side_effect=lambda: clock[0]):
+            for skey in ("immediate", "human", "swing", "space", "walk", "safe"):
+                clock[0] += 1.0
+                before_on = bool(self.app.live(skey))
+                _, thm_id_before, tx_off, tx_on = self.app._switch_items[skey]
+                self.app.flip(skey)
+                self.assertIn(f"sw:{skey}", self.app.anim_jobs, f"Missing switch anim for {skey}")
+                saw_mid, settled = self._drive_anims(clock, clock[0])
+                self.assertTrue(saw_mid, f"Midpoint never observed for {skey}")
+                self.assertTrue(settled, f"Anim did not return to idle for {skey}")
+                _, thm_id_after, tx_off, tx_on = self.app._switch_items[skey]
+                expected_x = tx_on if (not before_on) else tx_off
+                actual_x_dp = self.app.cv.coords(thm_id_after)[0] / self.app.S
+                self.assertAlmostEqual(actual_x_dp, expected_x, delta=1.5)
+                if skey in ("swing", "walk"):
+                    if not self.app.live(skey):
+                        self.assertEqual(len(self.app.cv.find_withtag("ui_mid")), 0)
+                    else:
+                        self.assertGreater(len(self.app.cv.find_withtag("ui_mid")), 0)
+                    clock[0] += 1.0
+                    self.app.flip(skey)
+                    self.assertIn(f"sw:{skey}", self.app.anim_jobs)
+                    saw_mid2, settled2 = self._drive_anims(clock, clock[0])
+                    self.assertTrue(saw_mid2 and settled2)
+                    if not self.app.live(skey):
+                        self.assertEqual(len(self.app.cv.find_withtag("ui_mid")), 0)
+                    else:
+                        self.assertGreater(len(self.app.cv.find_withtag("ui_mid")), 0)
+
+    def test_page_method_lang_chip_params_and_hover_animations_land_cleanly(self):
+        clock = [800.0]
+        with patch.object(ff.time, "monotonic", side_effect=lambda: clock[0]):
+            # Params accordion open & close
+            self.app.toggle_params()
+            self.assertIn("grp:ui_bot", self.app.anim_jobs)
+            self.assertIn("grp:ui_mid", self.app.anim_jobs)
+            mid1, done1 = self._drive_anims(clock, clock[0])
+            self.assertTrue(mid1 and done1)
+
+            clock[0] += 1.0
+            self.app.toggle_params()
+            self.assertIn("grp:ui_bot", self.app.anim_jobs)
+            mid2, done2 = self._drive_anims(clock, clock[0])
+            self.assertTrue(mid2 and done2)
+            self.assertEqual(len(self.app.cv.find_withtag("ui_mid")), 0)
+
+            # Method switch without full rebuild
+            clock[0] += 1.0
+            sw_dict_id = id(self.app._switch_items["human"])
+            self.app.select_method(2)
+            self.assertEqual(id(self.app._switch_items["human"]), sw_dict_id)
+            self.assertIn("rad:1", self.app.anim_jobs)
+            self.assertIn("rad:2", self.app.anim_jobs)
+            self.assertIn("item_y:method_act", self.app.anim_jobs)
+            self.assertTrue(all(self._drive_anims(clock, clock[0])))
+
+            # Language switch (RU -> EN)
+            clock[0] += 1.0
+            self.app.set_lang("en")
+            self.assertIn("item_x:seg_thumb", self.app.anim_jobs)
+            self.assertTrue(all(self._drive_anims(clock, clock[0])))
+
+            # Page switch (Main -> Settings -> Main)
+            clock[0] += 1.0
+            self.app.toggle_page()
+            self.assertEqual(self.app.page, "set")
+            self.assertIn("grp:ui_body", self.app.anim_jobs)
+            self.assertTrue(all(self._drive_anims(clock, clock[0])))
+
+            # Toggle any_win on Settings
+            clock[0] += 1.0
+            self.app.flip("any_win")
+            self.assertIn("sw:any_win", self.app.anim_jobs)
+            self.assertTrue(all(self._drive_anims(clock, clock[0])))
+
+            clock[0] += 1.0
+            self.app.toggle_page()
+            self.assertEqual(self.app.page, "main")
+            self.assertIn("grp:ui_body", self.app.anim_jobs)
+            self.assertTrue(all(self._drive_anims(clock, clock[0])))
+
+            # Chip pair without rebuild
+            clock[0] += 1.0
+            self.app.set_bool("mouse", True)
+            self.assertIn("chip:lmb_swing", self.app.anim_jobs)
+            self.assertIn("chip:lmb_hold", self.app.anim_jobs)
+            self.assertTrue(all(self._drive_anims(clock, clock[0])))
+
+            # Hover glow fade-in and fade-out
+            r_nav = next(r for r in self.app.regions if r[0] == "nav_set")
+            cx = int(round((r_nav[1] + r_nav[3]) * 0.5 * self.app.S))
+            cy = int(round((r_nav[2] + r_nav[4]) * 0.5 * self.app.S))
+            clock[0] += 1.0
+            self.app.on_move(types.SimpleNamespace(x=cx, y=cy))
+            self.assertIn("hov:nav_set", self.app.anim_jobs)
+            self.assertTrue(all(self._drive_anims(clock, clock[0])))
+            self.assertIn("nav_set", self.app._hover_items)
+
+            clock[0] += 1.0
+            self.app.on_leave()
+            self.assertIn("hov:nav_set", self.app.anim_jobs)
+            self.assertTrue(all(self._drive_anims(clock, clock[0])))
+            self.assertNotIn("nav_set", self.app._hover_items)
+
+    def test_running_pulse_and_instant_cancel_when_anim_disabled(self):
+        clock = [1200.0]
+        with patch.object(ff.time, "monotonic", side_effect=lambda: clock[0]):
+            self.app.running = True
+            self.app.state = "running"
+            self.app.refresh_dynamic_items()
+            self.assertIn("pulse", self.app.anim_jobs)
+            self.assertEqual(self.app.cv.itemcget(self.app._canvas_items["st_pulse"], "state"), "normal")
+
+            clock[0] += 0.25
+            self.app._step_anims()
+            self.assertIn("pulse", self.app.anim_jobs)
+
+            # Turn off animations mid-pulse -> stops immediately with 0% CPU
+            self.app.set_bool("anim", False)
+            self.assertEqual(len(self.app.anim_jobs), 0)
+            self.assertFalse(self.app.anim_running)
+            self.assertEqual(self.app.cv.itemcget(self.app._canvas_items["st_pulse"], "state"), "hidden")
+
+            # Re-enable animations while running -> resumes pulse cleanly, then stops on ready
+            clock[0] += 1.0
+            self.app.set_bool("anim", True)
+            self._drive_anims(clock, clock[0])
+            self.app.refresh_dynamic_items()
+            self.assertIn("pulse", self.app.anim_jobs)
+            self.app.running = False
+            self.app.state = "ready"
+            self.app.refresh_dynamic_items()
+            self.assertNotIn("pulse", self.app.anim_jobs)
+            self.assertFalse(self.app.anim_running)
+            self.assertEqual(self.app.cv.itemcget(self.app._canvas_items["st_pulse"], "state"), "hidden")
+
 
 class TestEngineConcurrencyAndMechanics(unittest.TestCase):
     def setUp(self):
