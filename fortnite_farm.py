@@ -18,6 +18,18 @@ import sys
 import threading
 import time
 from collections import deque
+
+# ---------------------------------------------------------------------------
+# DPI & Windows API Signatures (64-bit safe, set BEFORE GUI/C++ imports)
+# ---------------------------------------------------------------------------
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
 import tkinter as tk
 from tkinter import messagebox
 
@@ -27,26 +39,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 try:
-    import pyautogui
-    pyautogui.FAILSAFE = False
-except Exception:
-    pyautogui = None
-
-try:
     import keyboard
 except Exception:
     keyboard = None
-
-# ---------------------------------------------------------------------------
-# DPI & Windows API Signatures (64-bit safe)
-# ---------------------------------------------------------------------------
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
 
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
@@ -143,6 +138,16 @@ try:
     user32.MapVirtualKeyW.restype = wintypes.UINT
     user32.VkKeyScanW.argtypes = [wintypes.WCHAR]
     user32.VkKeyScanW.restype = ctypes.c_short
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.GetLastError.argtypes = []
+    kernel32.GetLastError.restype = wintypes.DWORD
 except Exception:
     pass
 
@@ -209,6 +214,23 @@ for _kname, _kvk in VK_BY_NAME.items():
         NAME_BY_VK[_kvk] = _kname
 
 RESERVED_HOTKEYS = {"w", "a", "s", "d", "space", "ctrl", "shift", "esc", "escape", "e", "return", "tab"}
+
+# Map Tk/VK key names to keyboard-library compatible names or hardware scan codes
+KB_HOTKEY_MAP: dict[str, str | int] = {
+    "page_up": "page up", "page_down": "page down", "pageup": "page up", "pagedown": "page down",
+    "kp_multiply": "*", "kp_add": "add", "kp_subtract": "subtract",
+    "kp_decimal": "decimal", "kp_divide": "slash",
+    "kp_0": 0x52, "kp_1": 0x4F, "kp_2": 0x50, "kp_3": 0x51, "kp_4": 0x4B,
+    "kp_5": 0x4C, "kp_6": 0x4D, "kp_7": 0x47, "kp_8": 0x48, "kp_9": 0x49,
+    "grave": 0x29, "minus": "-", "equal": "=", "bracketleft": 0x1A, "bracketright": 0x1B,
+    "backslash": "\\", "semicolon": ";", "apostrophe": 0x28, "comma": ",", "period": ".", "slash": "/",
+}
+
+
+def kb_hotkey_spec(kname: str) -> str | int:
+    """Translate internal key name into a valid keyboard.add_hotkey key or scan-code spec."""
+    kl = str(kname).strip().lower()
+    return KB_HOTKEY_MAP.get(kl, kl)
 
 
 def is_admin() -> bool:
@@ -456,10 +478,16 @@ TEXT = {
         "dt_wiggle": "Уворот стрейфами A–D",
         "dt_rmb_peek": "Короткий осмотр (ПКМ)",
         "dt_strafe": "Анти-АФК: {keys}",
+        "dt_pause": "пауза",
         "dt_walk_go": "Ходьба вперёд",
         "dt_walk_stand": "Пауза ~20 с на месте",
         "dt_walk_turn": "Разворот камеры ~180°",
-        "log_ready": "Конфигурация загружена. DirectInput готов.",
+        "m0_part_human": "Анти-АФК",
+        "m0_part_swing": "Кирка",
+        "m0_part_space": "Прыжки",
+        "m0_part_walk": "WASD",
+        "m0_part_mouse": "ЛКМ",
+        "log_ready": "Конфигурация загружена",
         "log_conn": "Экран загрузки распознан · Анти-АФК активен.",
         "btn_start": "Запустить",
         "btn_running": "Выполняется",
@@ -561,10 +589,16 @@ TEXT = {
         "dt_wiggle": "AD dodge wiggle",
         "dt_rmb_peek": "Brief ADS peek (RMB)",
         "dt_strafe": "Anti-AFK: {keys}",
+        "dt_pause": "pause",
         "dt_walk_go": "Walking forward",
         "dt_walk_stand": "Pausing ~20 s",
         "dt_walk_turn": "Turning ~180°",
-        "log_ready": "Config loaded. DirectInput ready.",
+        "m0_part_human": "Anti-AFK",
+        "m0_part_swing": "Pickaxe",
+        "m0_part_space": "Space",
+        "m0_part_walk": "WASD",
+        "m0_part_mouse": "LMB",
+        "log_ready": "Configuration loaded",
         "log_conn": "Connecting screen detected · Anti-AFK active.",
         "btn_start": "Start",
         "btn_running": "Running",
@@ -609,14 +643,27 @@ TEXT = {
 
 
 # ---------------------------------------------------------------------------
-# Template Matcher (Hardened halo-masked connecting detection)
+# Template Matcher (Hardened halo-masked connecting detection + 4K coarse-to-fine)
 # ---------------------------------------------------------------------------
+TEMPLATE_NAMES = ("play_again", "play_button", "menu_button", "return_lobby", "connecting")
+
+
+def check_templates_exist() -> None:
+    """Fast file check without decoding/allocating template pyramids on UI thread."""
+    for name in TEMPLATE_NAMES:
+        path = TEMPLATES / f"{name}.png"
+        if not path.exists():
+            raise FileNotFoundError(str(path))
+
+
 class Matcher:
     def __init__(self) -> None:
         self.data: dict[str, list[tuple[np.ndarray, np.ndarray | None, int, int]]] = {}
-        scales = (1.00, 0.94, 1.06, 0.88, 1.12, 0.80, 1.20, 0.72, 1.30, 1.40)
+        self.scales = (1.00, 0.94, 1.06, 0.88, 1.12, 0.80, 1.20, 0.72, 1.30, 1.40, 1.50, 1.75, 2.00)
+        self._raw_imgs: dict[str, np.ndarray] = {}
+        self._coarse_cache: dict[tuple[str, float, int], np.ndarray] = {}
         kernel = np.ones((5, 5), np.uint8)
-        for name in ("play_again", "play_button", "menu_button", "return_lobby", "connecting"):
+        for name in TEMPLATE_NAMES:
             path = TEMPLATES / f"{name}.png"
             if not path.exists():
                 raise FileNotFoundError(str(path))
@@ -624,9 +671,10 @@ class Matcher:
             img = cv2.imdecode(raw, cv2.IMREAD_GRAYSCALE)
             if img is None:
                 raise RuntimeError(f"Cannot decode {path}")
+            self._raw_imgs[name] = img
             h0, w0 = img.shape[:2]
             variants = []
-            for scale in scales:
+            for scale in self.scales:
                 w = max(20, int(round(w0 * scale)))
                 h = max(12, int(round(h0 * scale)))
                 tpl = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC)
@@ -642,6 +690,18 @@ class Matcher:
                 variants.append((tpl, mask, w, h))
             self.data[name] = variants
 
+    def _coarse_tpl(self, name: str, scale: float, c_div: int) -> np.ndarray:
+        key = (name, scale, c_div)
+        ctpl = self._coarse_cache.get(key)
+        if ctpl is None:
+            img = self._raw_imgs[name]
+            h0, w0 = img.shape[:2]
+            cw = max(14, int(round(w0 * scale / c_div)))
+            ch = max(8, int(round(h0 * scale / c_div)))
+            ctpl = cv2.resize(img, (cw, ch), interpolation=cv2.INTER_AREA)
+            self._coarse_cache[key] = ctpl
+        return ctpl
+
     def find(
         self,
         gray: np.ndarray | None,
@@ -651,11 +711,71 @@ class Matcher:
     ) -> tuple[float, tuple[int, int, int, int] | None]:
         if gray is None or gray.size == 0:
             return -1.0, None
+        variants = self.data.get(name, ())
+        if not variants:
+            return -1.0, None
         best = -1.0
         box = None
         gh, gw = gray.shape[:2]
         early_stop = max(threshold + 0.05, 0.94)
-        for tpl, mask, w, h in self.data.get(name, ()):
+
+        # Fast 2-stage coarse-to-fine pyramid search on full-screen frames (1080p..4K)
+        if gh >= 400 and gw >= 640:
+            est = max(0.65, min(2.25, gh / 1080.0))
+            lo_sc, hi_sc = min(0.72, est * 0.65), max(1.20, est * 1.38)
+            indexed = [
+                (idx, self.scales[idx], variants[idx])
+                for idx in range(len(variants))
+                if lo_sc <= self.scales[idx] <= hi_sc
+            ]
+            if not indexed:
+                indexed = [(idx, self.scales[idx], variants[idx]) for idx in range(len(variants))]
+            indexed.sort(key=lambda item: (0 if item[1] == 1.0 and abs(est - 1.0) <= 0.35 else 1, abs(item[1] - est)))
+
+            c_div = 4 if gw >= 2400 else 2
+            c_gray = cv2.resize(gray, (max(32, gw // c_div), max(32, gh // c_div)), interpolation=cv2.INTER_AREA)
+            coarse_hits: list[tuple[float, float, int, int, np.ndarray, np.ndarray | None, int, int]] = []
+            for _, sc, (tpl, mask, w, h) in indexed:
+                if stop_event is not None and stop_event.is_set():
+                    return -1.0, None
+                if h >= gh or w >= gw:
+                    continue
+                ctpl = self._coarse_tpl(name, sc, c_div)
+                if ctpl.shape[0] >= c_gray.shape[0] or ctpl.shape[1] >= c_gray.shape[1]:
+                    continue
+                res_c = cv2.matchTemplate(c_gray, ctpl, cv2.TM_CCOEFF_NORMED)
+                _, cscore, _, cloc = cv2.minMaxLoc(res_c)
+                coarse_hits.append((float(cscore), sc, int(cloc[0]), int(cloc[1]), tpl, mask, w, h))
+
+            coarse_hits.sort(key=lambda item: item[0], reverse=True)
+            pad = max(20, c_div * 8)
+            for _, _sc, cx, cy, tpl, mask, w, h in coarse_hits[:3]:
+                if stop_event is not None and stop_event.is_set():
+                    return -1.0, None
+                fx, fy = cx * c_div, cy * c_div
+                x0 = max(0, fx - pad)
+                y0 = max(0, fy - pad)
+                x1 = min(gw, fx + w + pad)
+                y1 = min(gh, fy + h + pad)
+                roi = gray[y0:y1, x0:x1]
+                if roi.shape[0] < h or roi.shape[1] < w:
+                    continue
+                if mask is not None:
+                    res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED, mask=mask)
+                    res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+                else:
+                    res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
+                _, score, _, loc = cv2.minMaxLoc(res)
+                if score > best:
+                    best = float(score)
+                    box = (int(x0 + loc[0]), int(y0 + loc[1]), int(w), int(h))
+                    if best >= early_stop:
+                        break
+            if best >= threshold and box is not None:
+                return best, box
+            return best, None
+
+        for tpl, mask, w, h in variants:
             if stop_event is not None and stop_event.is_set():
                 return -1.0, None
             if h >= gh or w >= gw:
@@ -707,6 +827,19 @@ class Engine:
         self.next_rmb_peek = now + random.uniform(12.0, 28.0)
         self.next_strafe = now + random.uniform(3.5, 7.5)
         self.anti_thread: threading.Thread | None = None
+        self._busy_lock = threading.Lock()
+        self._busy_count = 0
+
+    def enter_busy(self) -> None:
+        with self._busy_lock:
+            self._busy_count += 1
+            self.busy.set()
+
+    def exit_busy(self) -> None:
+        with self._busy_lock:
+            self._busy_count = max(0, self._busy_count - 1)
+            if self._busy_count == 0:
+                self.busy.clear()
 
     def _can_act(self) -> bool:
         """Return True when automation is active, not clicking UI, and target window is focused."""
@@ -1137,19 +1270,23 @@ class Engine:
                 x, y, w, h = box
                 px = self.monitor["left"] + x + w // 2
                 py = self.monitor["top"] + y + h // 2
-                with self.lock:
-                    if not self.is_target_focused():
+                self.enter_busy()
+                try:
+                    clicked = False
+                    with self.lock:
+                        if self.is_target_focused():
+                            self.release_all()
+                            click_screen_pos(px, py)
+                            self.app.emit("detail", f"{self.app.tr('dt_clicked')}{label}")
+                            self.app.emit("log", f"{self.app.tr('dt_clicked')}{label}")
+                            clicked = True
+                    if not clicked:
                         time.sleep(0.15)
                         continue
-                    self.busy.set()
-                    try:
-                        self.release_all()
-                        click_screen_pos(px, py)
-                        self.app.emit("detail", f"{self.app.tr('dt_clicked')}{label}")
-                        self.app.emit("log", f"{self.app.tr('dt_clicked')}{label}")
+                    if not self.stop.is_set():
                         time.sleep(0.65)
-                    finally:
-                        self.busy.clear()
+                finally:
+                    self.exit_busy()
                 return True
             if timeout is not None and (time.monotonic() - start) >= timeout:
                 return False
@@ -1272,6 +1409,7 @@ class Engine:
                             self.next_swing = time.monotonic() + self._next_rhythm_delay(2.8, 10.5)
 
                     # 2. Random jumps (Space)
+                    now = time.monotonic()
                     if use_space and now >= self.next_space:
                         if self._can_act():
                             self.tap_key("space", hold_s=random.uniform(0.055, 0.11))
@@ -1326,6 +1464,7 @@ class Engine:
                             self.next_rmb_peek = time.monotonic() + self._next_rhythm_delay(13.0, 30.0)
 
                     # 4. Movement & turns
+                    now = time.monotonic()
                     if use_human:
                         if wstate == "init" or now >= wend:
                             if wstate == "stand":
@@ -1345,7 +1484,7 @@ class Engine:
                                 move_tag, move_keys, dur = self._pick_human_move(move_tag)
                                 self.set_move_keys(move_keys)
                                 wend = time.monotonic() + dur
-                                label_keys = "pause" if not move_keys else "+".join(k.upper() for k in sorted(move_keys))
+                                label_keys = None if not move_keys else "+".join(k.upper() for k in sorted(move_keys))
                                 self.app.emit("detail", {"key": "dt_strafe", "keys": label_keys})
                     elif use_walk:
                         if wstate == "init" and now >= wend:
@@ -1439,29 +1578,30 @@ class Engine:
             if self.stop.is_set():
                 break
 
-            with self.lock:
-                self.busy.set()
-                try:
+            self.enter_busy()
+            try:
+                with self.lock:
                     self.release_all()
                     if self.is_target_focused():
                         send_key_hw("esc", True)
                         time.sleep(0.08)
                         send_key_hw("esc", False)
-                finally:
-                    self.busy.clear()
-            self.wait(0.8)
+                self.wait(0.8)
 
-            if not self.click("menu_button", "Menu", timeout=18.0):
-                if self.stop.is_set():
-                    break
-                self.app.emit("log", {"key": "log_retry_esc"})
-                if self.is_target_focused():
-                    self.tap_key("esc", hold_s=0.08)
-                if not self.click("menu_button", "Menu", timeout=15.0):
+                if not self.click("menu_button", "Menu", timeout=18.0):
+                    if self.stop.is_set():
+                        break
+                    self.app.emit("log", {"key": "log_retry_esc"})
+                    with self.lock:
+                        if self.is_target_focused():
+                            self.tap_key("esc", hold_s=0.08)
+                    if not self.click("menu_button", "Menu", timeout=15.0):
+                        continue
+                if not self.click("return_lobby", "Return to Lobby", timeout=25.0):
                     continue
-            if not self.click("return_lobby", "Return to Lobby", timeout=25.0):
-                continue
-            self.wait(3.0)
+                self.wait(3.0)
+            finally:
+                self.exit_busy()
 
     def wait(self, seconds: float) -> None:
         end = time.monotonic() + seconds
@@ -1481,18 +1621,18 @@ class Engine:
 
             if method == 0:
                 self.app.emit("status", "running")
-                parts = []
+                part_keys = []
                 if self.app.live("human"):
-                    parts.append("Human")
+                    part_keys.append("m0_part_human")
                 if self.app.live("swing"):
-                    parts.append("Pickaxe")
+                    part_keys.append("m0_part_swing")
                 if self.app.live("space"):
-                    parts.append("Space")
+                    part_keys.append("m0_part_space")
                 if self.app.live("walk"):
-                    parts.append("WASD")
+                    part_keys.append("m0_part_walk")
                 if self.app.live("mouse"):
-                    parts.append("LMB")
-                self.app.emit("detail", " + ".join(parts) if parts else "AFK")
+                    part_keys.append("m0_part_mouse")
+                self.app.emit("detail", {"key": "dt_m0_summary", "parts": part_keys})
                 while not self.stop.is_set():
                     time.sleep(0.25)
             elif method == 1:
@@ -1543,7 +1683,7 @@ def register_private_fonts() -> None:
 def font_candidates(weight: str) -> list[str]:
     own, var_win, win = FONT_FILES.get(weight, FONT_FILES["rg"])
     wd = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-    c = [str(wd / var_win), str(wd / win), str(wd / "segoeui.ttf"), str(FONTS_DIR / own)]
+    c = [str(wd / var_win), str(FONTS_DIR / own), str(wd / win), str(wd / "segoeui.ttf")]
     c.append(str(wd / ("arialbd.ttf" if weight in ("sb", "bd") else "arial.ttf")))
     return c
 
@@ -1605,6 +1745,7 @@ class App:
         self.capturing: str | None = None
         self.hotkeys: list = []
         self._vk_prev: dict[str, bool] = {}
+        self._finished_at: float = 0.0
 
         self.detail_ref: str | dict = {"key": "dt_idle"}
         self.log: deque[tuple[str, str]] = deque(maxlen=2)
@@ -1699,15 +1840,22 @@ class App:
         return TEXT.get(lang, TEXT["ru"]).get(k, k)
 
     def emit(self, k: str, v: object) -> None:
+        if k == "cmd" and isinstance(v, str):
+            v = (v, time.monotonic())
         self.events.put((k, v))
 
     def ref(self, r: str | dict) -> str:
         if isinstance(r, dict):
-            tpl = self.tr(r.get("key", ""))
+            rkey = r.get("key", "")
+            if rkey == "dt_m0_summary":
+                parts = [self.tr(pk) for pk in r.get("parts", ())]
+                return " + ".join(parts) if parts else "AFK"
+            tpl = self.tr(rkey)
             if "m" in r:
                 return tpl.format(m=r["m"])
             if "keys" in r:
-                return tpl.format(keys=r["keys"])
+                kval = r["keys"] if r["keys"] else self.tr("dt_pause")
+                return tpl.format(keys=kval)
             return tpl
         return str(r)
 
@@ -1823,10 +1971,32 @@ class App:
             except Exception:
                 return float(len(s) * 7)
 
+    def _fit_text(self, text: str, size_dp: float, wt: str, max_w_dp: float) -> str:
+        if not text or max_w_dp <= 20.0:
+            return text
+        ss = 2.0
+        R = self.S * ss
+        fn = self.fnt(size_dp * ss, wt, opsz_dp=size_dp)
+        if self.text_w(fn, text) / R <= max_w_dp:
+            return text
+        ell = "…"
+        lo, hi = 1, len(text)
+        best_s = ell
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            cand = text[:mid].rstrip() + ell
+            if self.text_w(fn, cand) / R <= max_w_dp:
+                best_s = cand
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best_s
+
     def _text_sprite(self, text: str, size_dp: float, wt: str, col_rgb: tuple[int, int, int]) -> tuple[Image.Image, ImageTk.PhotoImage]:
         key = (text, round(size_dp, 1), wt, col_rgb, round(self.S, 2))
-        cached = self._text_cache.get(key)
+        cached = self._text_cache.pop(key, None)
         if cached is not None:
+            self._text_cache[key] = cached
             return cached
         if not text:
             im = Image.new("RGBA", (2, 2), (0, 0, 0, 0))
@@ -1852,8 +2022,8 @@ class App:
         h_1x = max(4, int(round(h_r / ss)))
         im_1x = im_2x.resize((w_1x, h_1x), Image.Resampling.LANCZOS)
         ph = ImageTk.PhotoImage(im_1x, master=self.root)
-        if len(self._text_cache) > 256:
-            self._text_cache.clear()
+        while len(self._text_cache) >= 256:
+            self._text_cache.pop(next(iter(self._text_cache)), None)
         res = (im_1x, ph)
         self._text_cache[key] = res
         return res
@@ -2281,7 +2451,7 @@ class App:
             y += card2_h + 9.0
 
             # Card 3: Live Status & Log
-            card3_h = 72.0
+            card3_h = 74.0
             layout_blocks.append(("status", y, card3_h))
             y += card3_h + 9.0
         else:
@@ -2798,8 +2968,8 @@ class App:
                 anchor="center", state="hidden", tags=s_tags,
             )
             self._place_dyn_text("st_detail", "", pad + cw - 12.0, sy + 18.5, 12.0, "rg", C_TX2, anchor="e", tags=s_tags)
-            self._place_dyn_text("log_0", "", pad + 12.0, sy + 47.0, 11.5, "rg", C_TX2, anchor="w", tags=s_tags)
-            self._place_dyn_text("log_1", "", pad + 12.0, sy + 61.5, 11.5, "rg", C_TX3, anchor="w", tags=s_tags)
+            self._place_dyn_text("log_0", "", pad + 12.0, sy + 46.5, 11.5, "rg", C_TX2, anchor="w", tags=s_tags)
+            self._place_dyn_text("log_1", "", pad + 12.0, sy + 60.5, 11.5, "rg", C_TX3, anchor="w", tags=s_tags)
 
         # Primary Start / Stop CTA items (crisp rounded sprites + 2x LANCZOS text)
         sx0, sy0, sw0, sh0, px0, py0, pw0, ph0 = main_action_rects
@@ -2844,32 +3014,64 @@ class App:
 
         self.refresh_dynamic_items()
 
-        # Kick off smooth structural transitions (now that _dyn_pil holds fresh text sprites)
+        # Configure scroll region & window height BEFORE stamping animation start time (zero DWM frame-skip)
         wh = int(round(self.view_h * self.S))
         prev_wh = int(round(prev_view_h * self.S))
+        self.scroll_y = clamp(self.scroll_y, 0.0, max(0.0, self.total_h - self.view_h))
+        if self.total_h > 0:
+            self.cv.yview_moveto(self.scroll_y / self.total_h)
+        if active_anim is not None and active_anim["kind"] in ("expand", "collapse", "page") and prev_wh != wh:
+            if not HEADLESS and prev_wh > wh:
+                # Shrinking: keep OS window at prev_wh while Canvas slides up smoothly, then shrink once at end
+                self.cv.configure(
+                    width=self.Wp,
+                    height=prev_wh,
+                    scrollregion=(0, 0, self.Wp, int(round(self.total_h * self.S))),
+                )
+                self._set_root_wh(self.Wp, prev_wh)
+                self._pending_geo_wh = (self.Wp, wh)
+            else:
+                # Expanding: resize OS window once up front so no mid-animation WM_SIZE DWM flicker occurs
+                self.cv.configure(
+                    width=self.Wp,
+                    height=wh,
+                    scrollregion=(0, 0, self.Wp, int(round(self.total_h * self.S))),
+                )
+                self._set_root_wh(self.Wp, wh)
+                self._pending_geo_wh = None
+        else:
+            self.cv.configure(
+                width=self.Wp,
+                height=wh,
+                scrollregion=(0, 0, self.Wp, int(round(self.total_h * self.S))),
+            )
+            self._set_root_wh(self.Wp, wh)
+
+        # Kick off smooth structural transitions (stamp t0 AFTER all PIL/PhotoImage/geometry prep)
         if active_anim is not None:
             ak = active_anim["kind"]
-            now_t = time.monotonic()
             if ak == "page":
                 dx0 = float(active_anim.get("dir", 1.0)) * 22.0
-                self._start_group_move("ui_body", dx0, 0.0, 0.21, now_t)
                 dy_f = float(active_anim.get("old_footer_y", footer_y)) - footer_y
-                if abs(dy_f) > 1.0:
-                    self._start_group_move("ui_footer", 0.0, dy_f, 0.21, now_t)
                 old_comp = active_anim.get("old_comp")
+                frames: list[ImageTk.PhotoImage] = []
+                hy = max(1, int(round(header_h * self.S)))
                 if old_comp is not None:
-                    hy = max(1, int(round(header_h * self.S)))
                     old_fy_px = min(old_comp.height, max(hy + 1, int(round(active_anim.get("old_footer_y", footer_y) * self.S))))
                     old_b = old_comp.crop((0, hy, self.Wp, old_fy_px)).convert("RGBA")
                     alpha_ch = old_b.getchannel("A")
-                    frames: list[ImageTk.PhotoImage] = []
-                    for k in range(7):
-                        t = k / 6.0
-                        a_scale = 0.92 * ((1.0 - t) ** 1.4)
+                    for k in range(6):
+                        t = k / 5.0
+                        a_scale = 0.90 * ((1.0 - t) ** 1.4)
                         fr = old_b.copy()
                         fr.putalpha(alpha_ch.point(lambda p, s=a_scale: int(p * s)))
                         frames.append(ImageTk.PhotoImage(fr, master=self.root))
                     self._trans_photos.extend(frames)
+                now_t = time.monotonic()
+                self._start_group_move("ui_body", dx0, 0.0, 0.21, now_t)
+                if abs(dy_f) > 1.0:
+                    self._start_group_move("ui_footer", 0.0, dy_f, 0.21, now_t)
+                if frames:
                     tid = self.cv.create_image(0, hy, anchor="nw", image=frames[0], tags=("ui_trans",))
                     for ltag in ("ui_footer", "layer_hdr_bg", "layer_hdr_fg"):
                         if self.cv.find_withtag(ltag):
@@ -2890,6 +3092,20 @@ class App:
                 if prev_lng != lang:
                     px_start = seg_x + (3.0 if prev_lng == "ru" else 42.0)
                     self.cv.coords(self._canvas_items["seg_thumb"], int(round(px_start * self.S)), int(round((seg_y + 3.0) * self.S)))
+                    old_comp = active_anim.get("old_comp")
+                    new_comp = self.render_headless_preview() if old_comp is not None else None
+                    frames = []
+                    hy = max(1, int(round(header_h * self.S)))
+                    if old_comp is not None and new_comp is not None:
+                        mh = min(old_comp.height, new_comp.height)
+                        old_b = old_comp.crop((0, hy, self.Wp, mh)).convert("RGBA")
+                        new_b = new_comp.crop((0, hy, self.Wp, mh)).convert("RGBA")
+                        frames = [
+                            ImageTk.PhotoImage(Image.blend(old_b, new_b, (k + 1) / 7.0), master=self.root)
+                            for k in range(6)
+                        ]
+                        self._trans_photos.extend(frames)
+                    now_t = time.monotonic()
                     self._queue_anim("item_x:seg_thumb", {
                         "kind": "item_x",
                         "item": self._canvas_items["seg_thumb"],
@@ -2898,18 +3114,7 @@ class App:
                         "x0": px_start,
                         "x1": seg_tx0,
                     })
-                    old_comp = active_anim.get("old_comp")
-                    new_comp = self.render_headless_preview()
-                    if old_comp is not None and new_comp is not None:
-                        hy = max(1, int(round(header_h * self.S)))
-                        mh = min(old_comp.height, new_comp.height)
-                        old_b = old_comp.crop((0, hy, self.Wp, mh)).convert("RGBA")
-                        new_b = new_comp.crop((0, hy, self.Wp, mh)).convert("RGBA")
-                        frames = [
-                            ImageTk.PhotoImage(Image.blend(old_b, new_b, (k + 1) / 9.0), master=self.root)
-                            for k in range(8)
-                        ]
-                        self._trans_photos.extend(frames)
+                    if frames:
                         tid = self.cv.create_image(0, hy, anchor="nw", image=frames[0], tags=("ui_trans",))
                         for ltag in ("layer_hdr_bg", "layer_hdr_fg"):
                             if self.cv.find_withtag(ltag):
@@ -2926,36 +3131,23 @@ class App:
                             "y0": float(hy) / self.S,
                         })
             elif ak == "expand":
+                now_t = time.monotonic()
                 delta = active_anim["split_y1"] - active_anim["split_y0"]
                 self._start_group_move("ui_bot", 0.0, -delta, 0.20, now_t)
                 self._start_group_move("ui_mid", 0.0, -delta * 0.45, 0.20, now_t)
             elif ak == "collapse":
+                now_t = time.monotonic()
                 delta = float(active_anim["delta_h"])
                 self._start_group_move("ui_bot", 0.0, delta, 0.20, now_t)
                 if self.cv.find_withtag("ui_mid"):
                     self._start_group_move("ui_mid", 0.0, -delta * 0.35, 0.20, now_t, delete_on_done=True)
 
-        # Configure scroll region & smooth window height sync
-        self.scroll_y = clamp(self.scroll_y, 0.0, max(0.0, self.total_h - self.view_h))
-        if self.total_h > 0:
-            self.cv.yview_moveto(self.scroll_y / self.total_h)
-        if active_anim is not None and active_anim["kind"] in ("expand", "collapse", "page") and prev_wh != wh:
-            self.cv.configure(
-                width=self.Wp,
-                height=prev_wh if not HEADLESS else wh,
-                scrollregion=(0, 0, self.Wp, int(round(self.total_h * self.S))),
-            )
-            if not HEADLESS:
-                self._set_root_wh(self.Wp, prev_wh)
-                self._geo_anim = (prev_wh, wh)
-                self._pending_geo_wh = (self.Wp, wh)
-        else:
-            self.cv.configure(
-                width=self.Wp,
-                height=wh,
-                scrollregion=(0, 0, self.Wp, int(round(self.total_h * self.S))),
-            )
-            self._set_root_wh(self.Wp, wh)
+        # Synchronize all queued job start timestamps so frame 1 always begins after rebuild_ui exits
+        if self.anim_jobs:
+            sync_t = time.monotonic()
+            for jkey, job in self.anim_jobs.items():
+                if jkey != "pulse":
+                    job["t0"] = sync_t
 
     def refresh_dynamic_items(self) -> None:
         """Update dynamic 2x LANCZOS labels/status/buttons/steppers instantaneously."""
@@ -2989,14 +3181,16 @@ class App:
             st = self.state if self.state in ("ready", "running", "starting", "stopping") else "ready"
             self.cv.itemconfigure(self._canvas_items["st_pill"], image=self.sprites[f"pill_{lang}_{st}"])
 
+            cw_card = self.W - 32.0
             det = self.ref(self.detail_ref)
             if isinstance(self.detail_ref, dict) and self.detail_ref.get("key") == "dt_idle":
                 det = f"{det} {str(self.live('start_key')).upper()}"
+            det = self._fit_text(det, 12.0, "rg", cw_card - 138.0)
             self._set_dyn_text("st_detail", det, 12.0, "rg", C_TX2)
 
             logs = list(self.log)
-            l0 = f"{logs[-1][0]}  {logs[-1][1]}" if len(logs) >= 1 else ""
-            l1 = f"{logs[-2][0]}  {logs[-2][1]}" if len(logs) >= 2 else ""
+            l0 = self._fit_text(f"{logs[-1][0]}  {logs[-1][1]}", 11.5, "rg", cw_card - 24.0) if len(logs) >= 1 else ""
+            l1 = self._fit_text(f"{logs[-2][0]}  {logs[-2][1]}", 11.5, "rg", cw_card - 24.0) if len(logs) >= 2 else ""
             self._set_dyn_text("log_0", l0, 11.5, "rg", C_TX2)
             self._set_dyn_text("log_1", l1, 11.5, "rg", C_TX3)
             self._sync_pulse()
@@ -3130,13 +3324,16 @@ class App:
             det = self.ref(self.detail_ref)
             if isinstance(self.detail_ref, dict) and self.detail_ref.get("key") == "dt_idle":
                 det = f"{det} {str(self.live('start_key')).upper()}"
+            det = self._fit_text(det, 12.0, "rg", cw - 138.0)
             paste_txt("st_detail", det, pad + cw - 12.0, sy + 18.5, 12.0, "rg", C_TX2, anchor="e")
 
             logs = list(self.log)
             if len(logs) >= 1:
-                paste_txt("log_0", f"{logs[-1][0]}  {logs[-1][1]}", pad + 12.0, sy + 47.0, 11.5, "rg", C_TX2, anchor="w")
+                l0 = self._fit_text(f"{logs[-1][0]}  {logs[-1][1]}", 11.5, "rg", cw - 24.0)
+                paste_txt("log_0", l0, pad + 12.0, sy + 46.5, 11.5, "rg", C_TX2, anchor="w")
             if len(logs) >= 2:
-                paste_txt("log_1", f"{logs[-2][0]}  {logs[-2][1]}", pad + 12.0, sy + 61.5, 11.5, "rg", C_TX3, anchor="w")
+                l1 = self._fit_text(f"{logs[-2][0]}  {logs[-2][1]}", 11.5, "rg", cw - 24.0)
+                paste_txt("log_1", l1, pad + 12.0, sy + 60.5, 11.5, "rg", C_TX3, anchor="w")
 
         sx0, sy0, sw0, sh0, px0, py0, pw0, ph0 = meta["cta"]
         sk = str(self.live("start_key")).upper()
@@ -3451,8 +3648,28 @@ class App:
                     if k.startswith("grp:") and job["tag"] == grp:
                         self.cv.move(hid, int(job["ap_x"]), int(job["ap_y"]))
                         break
-            if self.cv.find_withtag("layer_hdr_fg"):
-                self.cv.tag_raise("layer_hdr_fg")
+            # Keep hover overlays strictly below foreground labels/controls while above card/button backgrounds
+            if rid in ("cta_start", "cta_stop") and f"{rid}_tx" in self._canvas_items:
+                self.cv.tag_raise(self._canvas_items[f"{rid}_tx"])
+            elif rid in ("bind_start", "bind_stop"):
+                which = rid.split("_", 1)[1]
+                if f"bind_tx_{which}" in self._canvas_items:
+                    self.cv.tag_raise(self._canvas_items[f"bind_tx_{which}"])
+            elif rid in ("lang_ru", "lang_en"):
+                for ltk in ("seg_ru_tx", "seg_en_tx"):
+                    if ltk in self._canvas_items:
+                        self.cv.tag_raise(self._canvas_items[ltk])
+            elif rid in self._chip_items:
+                for sid, sc_step in self._sub_scrims.values():
+                    if sc_step > 0:
+                        self.cv.tag_raise(sid)
+            else:
+                bg_tag = "layer_mid_bg" if lay == "layer_mid_fg" else ("layer_hdr_bg" if lay == "layer_hdr_fg" else "layer_topbot_bg")
+                if self.cv.find_withtag(bg_tag):
+                    self.cv.tag_raise(hid, bg_tag)
+            for ltag in ("layer_hdr_bg", "layer_hdr_fg"):
+                if self.cv.find_withtag(ltag):
+                    self.cv.tag_raise(ltag)
 
     def _step_anims(self) -> None:
         self._anim_after_id = None
@@ -3606,12 +3823,6 @@ class App:
             self.anim_jobs.pop(k, None)
         if not any(job.get("kind") == "fade_frames" for job in self.anim_jobs.values()):
             self._trans_photos.clear()
-        if self._geo_anim is not None and geo_ease is not None and not HEADLESS:
-            h0, h1 = self._geo_anim
-            cur_wh = int(round(h0 + (h1 - h0) * geo_ease))
-            if cur_wh != getattr(self, "_geo_last_wh", 0):
-                self._geo_last_wh = cur_wh
-                self._set_root_wh(self.Wp, cur_wh)
         if grp_finished and not any(k.startswith("grp:") for k in self.anim_jobs):
             self._commit_pending_geo()
         if self.anim_jobs:
@@ -3634,6 +3845,10 @@ class App:
         if not rid or rid not in self._hover_rects:
             return False
         if self.running and (rid == "cta_start" or rid.startswith("m_")):
+            return False
+        if rid in ("lmb_swing", "lmb_hold") and not self.live("swing"):
+            return False
+        if rid in ("pace_norm", "pace_stand") and not self.live("walk"):
             return False
         lang = self.live("lang")
         if (rid == "lang_ru" and lang == "ru") or (rid == "lang_en" and lang == "en"):
@@ -3677,6 +3892,8 @@ class App:
 
     def on_click(self, e) -> None:
         r = self._hit(e.x, e.y)
+        if self.capturing is not None and (not r or r[0] != f"bind_{self.capturing}"):
+            self.end_capture()
         if r and callable(r[5]):
             r[5]()
 
@@ -3686,6 +3903,8 @@ class App:
         step = -1 * (e.delta / 120.0) * 32.0
         self.scroll_y = clamp(self.scroll_y + step, 0.0, max(0.0, self.total_h - self.view_h))
         self.cv.yview_moveto(self.scroll_y / self.total_h)
+        if hasattr(e, "x") and hasattr(e, "y") and 0 <= e.x <= self.Wp:
+            self.on_move(e)
 
     def _clear_undo(self) -> bool:
         if self.undo_snap is not None:
@@ -3745,11 +3964,18 @@ class App:
         self.save()
         if undo_was:
             self.rebuild_ui()
-        else:
+        if not undo_was:
+            self.refresh_dynamic_items()
+        if old_m != m:
+            if undo_was and self.live("anim") and old_m in self._method_ys:
+                self.cv.coords(self._canvas_items["method_act"], int(round((16.0 + 10.0) * self.S)), int(round(self._method_ys[old_m] * self.S)))
+                if old_m in self._radio_items:
+                    self.cv.itemconfigure(self._radio_items[old_m], image=self.sprites["rad_on"])
+                if m in self._radio_items:
+                    self.cv.itemconfigure(self._radio_items[m], image=self.sprites["rad_off"])
             self.animate_radio(old_m, False)
             self.animate_radio(m, True)
             self.animate_method_card(old_m, m)
-            self.refresh_dynamic_items()
 
     def flip(self, key: str) -> None:
         undo_was = self._clear_undo()
@@ -3760,17 +3986,23 @@ class App:
         if undo_was:
             spec = {"kind": "sw_only", "sw_from": sw_from} if self.live("anim") else None
             self.rebuild_ui(anim_spec=spec)
+            if self.live("anim"):
+                if key == "swing":
+                    self.animate_sub_scrim("pickaxe", new_val)
+                elif key == "walk":
+                    self.animate_sub_scrim("pace", new_val)
             return
+        self.refresh_dynamic_items()
         self.animate_switch(key, new_val)
         if key == "swing":
             self.animate_sub_scrim("pickaxe", new_val)
         elif key == "walk":
             self.animate_sub_scrim("pace", new_val)
-        self.refresh_dynamic_items()
 
     def set_bool(self, key: str, val: bool) -> None:
         old_val = bool(self.live(key))
         undo_was = self._clear_undo()
+        sw_from = self._capture_switch_fracs() if (undo_was and self.live("anim")) else {}
         auto_swing = (key == "mouse" and not self.live("swing"))
         auto_walk = (key == "stand" and not self.live("walk"))
         self.set_cfg(key, val)
@@ -3788,18 +4020,20 @@ class App:
                 self.refresh_dynamic_items()
             return
         if undo_was:
-            self.rebuild_ui()
-            return
+            spec = {"kind": "sw_only", "sw_from": sw_from} if self.live("anim") else None
+            self.rebuild_ui(anim_spec=spec)
+        elif old_val != bool(val) or auto_swing or auto_walk:
+            self.refresh_dynamic_items()
         if old_val != bool(val):
             self.animate_chip_pair(key, bool(val))
         if auto_swing:
-            self.animate_switch("swing", True)
+            if not undo_was:
+                self.animate_switch("swing", True)
             self.animate_sub_scrim("pickaxe", True)
         if auto_walk:
-            self.animate_switch("walk", True)
+            if not undo_was:
+                self.animate_switch("walk", True)
             self.animate_sub_scrim("pace", True)
-        if old_val != bool(val) or auto_swing or auto_walk:
-            self.refresh_dynamic_items()
 
     def bump_delay(self, which: str, delta: int) -> None:
         undo_was = self._clear_undo()
@@ -3817,7 +4051,7 @@ class App:
             self.rebuild_ui()
         else:
             self.refresh_dynamic_items()
-            self.flash_item(f"val_{which}", str(self.live(which)))
+        self.flash_item(f"val_{which}", str(self.live(which)))
 
     def bump_turn(self, delta: int) -> None:
         undo_was = self._clear_undo()
@@ -3828,7 +4062,7 @@ class App:
             self.rebuild_ui()
         else:
             self.refresh_dynamic_items()
-            self.flash_item("val_turn_px", str(nv))
+        self.flash_item("val_turn_px", str(nv))
 
     def reset_all(self) -> None:
         if self.running:
@@ -3866,13 +4100,12 @@ class App:
             except Exception:
                 pass
         self.hotkeys.clear()
-        try:
-            sk = str(self.live("start_key"))
-            ek = str(self.live("stop_key"))
-            self.hotkeys.append(keyboard.add_hotkey(sk, lambda: self.emit("cmd", "start")))
-            self.hotkeys.append(keyboard.add_hotkey(ek, lambda: self.emit("cmd", "stop")))
-        except Exception:
-            pass
+        for role, cfg_k in (("start", "start_key"), ("stop", "stop_key")):
+            try:
+                spec = kb_hotkey_spec(str(self.live(cfg_k)))
+                self.hotkeys.append(keyboard.add_hotkey(spec, lambda r=role: self.emit("cmd", (r, time.monotonic()))))
+            except Exception:
+                pass
 
     def begin_capture(self, which: str) -> None:
         self.capturing = which
@@ -3964,7 +4197,7 @@ class App:
             messagebox.showinfo(APP_NAME, self.tr("err_afk_req"))
             return
         try:
-            Matcher()
+            check_templates_exist()
         except Exception as e:
             messagebox.showerror(APP_NAME, f"{self.tr('err_notfound')}{e}")
             return
@@ -3981,6 +4214,12 @@ class App:
         self.busy_event.clear()
         self.running = True
         self.state = "starting"
+        for hrid in list(self._hover_items.keys()):
+            if not self._is_hover_eligible(hrid):
+                self.anim_jobs.pop(f"hov:{hrid}", None)
+                self._set_hover_visual(hrid, 0.0)
+        if self.hover_id and not self._is_hover_eligible(self.hover_id):
+            self.cv.configure(cursor="")
         self.detail_ref = {"key": "dt_afk_wait" if method == 0 else "dt_wait_game"}
         self.add_log(self.ref(self.detail_ref))
         self.refresh_dynamic_items()
@@ -3997,12 +4236,13 @@ class App:
             self.emit("error", str(e))
         finally:
             self.engine = None
-            self.emit("finished", None)
+            self.emit("finished", time.monotonic())
 
     def stop(self) -> None:
         if not self.running:
             return
         self.state = "stopping"
+        self._finished_at = time.monotonic()
         self.stop_event.set()
         if self.engine:
             self.engine.release_all()
@@ -4028,12 +4268,18 @@ class App:
                 elif k == "finished":
                     self.running = False
                     self.state = "ready"
+                    fin_ts = float(v) if isinstance(v, (int, float)) else time.monotonic()
+                    self._finished_at = max(self._finished_at, fin_ts)
                     self.detail_ref = {"key": "dt_idle"}
                     self.add_log(self.tr("st_stopped"))
                 elif k == "cmd":
-                    if v == "start" and not self.running:
+                    if isinstance(v, tuple) and len(v) == 2:
+                        act, cmd_ts = str(v[0]), float(v[1])
+                    else:
+                        act, cmd_ts = str(v), time.monotonic()
+                    if act == "start" and not self.running and cmd_ts > self._finished_at:
                         self.start()
-                    elif v == "stop" and self.running:
+                    elif act == "stop" and self.running:
                         self.stop()
         except queue.Empty:
             pass
@@ -4057,7 +4303,31 @@ class App:
         self.root.destroy()
 
 
+_SINGLETON_MUTEX = None
+
+
+def acquire_single_instance() -> bool:
+    """Ensure only one interactive GUI instance runs at a time on Windows."""
+    global _SINGLETON_MUTEX
+    if HEADLESS or os.environ.get("PIRATE_DUMP_PREVIEW"):
+        return True
+    try:
+        h = kernel32.CreateMutexW(None, False, "Local\\PirateTokenFarmSingleton")
+        if h and kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            hwnd = user32.FindWindowW(None, APP_NAME)
+            if hwnd:
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.SetForegroundWindow(hwnd)
+            return False
+        _SINGLETON_MUTEX = h
+    except Exception:
+        pass
+    return True
+
+
 def main() -> None:
+    if not acquire_single_instance():
+        return
     root = tk.Tk()
     app = App(root)
     if os.environ.get("PIRATE_DUMP_PREVIEW"):

@@ -252,9 +252,11 @@ class TestAppAndUI(unittest.TestCase):
 
         # 3. Expanded parameters + Undo + Running preview
         self.app.page = "main"
-        self.app.set_cfg("method", 2)
-        self.app.params_open = True
         self.app.reset_all()  # shows Undo banner
+        self.app.set_cfg("method", 2)
+        self.app.set_cfg("min", 13)
+        self.app.set_cfg("max", 14)
+        self.app.params_open = True
         self.app.state = "running"
         self.app.running = True
         self.app.detail_ref = {"key": "dt_waiting", "m": 11}
@@ -270,9 +272,13 @@ class TestAppAndUI(unittest.TestCase):
         self.app.state = "ready"
         self.app.undo_snap = None
         self.app.params_open = False
+        self.app.set_cfg("method", 1)
         self.app.detail_ref = {"key": "dt_idle"}
         self.app.set_lang("en")
+        self.app.log.clear()
+        self.app.add_log(self.app.tr("log_ready") + " · " + (self.app.tr("admin_ok") if ff.is_admin() else self.app.tr("admin_no")))
         self.app._stop_all_anims(snap=True)
+        self.app.refresh_dynamic_items()
         img_en = self.app.render_headless_preview()
         self.assertIsNotNone(img_en)
         out_en = ART / "pirate_app_en.png"
@@ -897,6 +903,154 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
             prev = tag
         self.assertIn("w+a+shift", seen_tags)
         self.assertIn("w+d+shift", seen_tags)
+
+    def test_matcher_4k_scale_and_1080p_connecting_speed(self):
+        matcher = ff.Matcher()
+        tpl = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "connecting.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        # 1. Verify 1080p non-match speed (< 600ms instead of 8000ms)
+        flat_1080 = np.full((1080, 1920), 64, dtype=np.uint8)
+        t0 = time.perf_counter()
+        score0, box0 = matcher.find(flat_1080, "connecting")
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertIsNone(box0)
+        self.assertLess(dt_ms, 650.0, f"1080p connecting scan too slow: {dt_ms:.1f} ms")
+
+        # 2. Verify 4K (3840x2160) 2.0x scale match on seasonal gradient background
+        h4, w4 = 2160, 3840
+        y_grad = np.linspace(30, 175, h4, dtype=np.float32)[:, None]
+        x_grad = np.linspace(25, 160, w4, dtype=np.float32)[None, :]
+        canvas_4k = np.clip(0.55 * y_grad + 0.45 * x_grad, 0, 210).astype(np.uint8)
+        tw, th = tpl.shape[1] * 2, tpl.shape[0] * 2
+        tpl_2x = cv2.resize(tpl, (tw, th), interpolation=cv2.INTER_CUBIC)
+        fg_2x = tpl_2x > 180
+        ox, oy = 420, 980
+        roi = canvas_4k[oy:oy + th, ox:ox + tw]
+        roi[fg_2x] = tpl_2x[fg_2x]
+        score4, box4 = matcher.find(canvas_4k, "connecting", 0.72)
+        self.assertIsNotNone(box4, f"Failed to detect 2.0x connecting on 4K frame (score={score4})")
+        self.assertGreaterEqual(score4, 0.90)
+
+    def test_all_vk_by_name_hotkeys_bind_cleanly_including_numpad_and_symbols(self):
+        if ff.keyboard is not None:
+            for kname in ff.VK_BY_NAME:
+                spec = ff.kb_hotkey_spec(kname)
+                h = ff.keyboard.add_hotkey(spec, lambda: None)
+                ff.keyboard.remove_hotkey(h)
+        # Also verify per-hotkey try/except isolation if start_key fails
+        calls = []
+        def fake_add(spec, cb):
+            if spec == "bad_key":
+                raise ValueError("bad key")
+            calls.append(spec)
+            return spec
+        with patch.object(ff, "keyboard") as m_kb:
+            m_kb.add_hotkey.side_effect = fake_add
+            self.app.set_cfg("start_key", "bad_key")
+            self.app.set_cfg("stop_key", "kp_5")
+            self.app.bind_hotkeys()
+        self.assertEqual(calls, [ff.kb_hotkey_spec("kp_5")])
+
+    def test_poll_ignores_stale_start_cmd_queued_before_stop_or_finish(self):
+        with patch.object(self.app, "start") as m_start:
+            self.app.running = True
+            self.app.state = "running"
+            # Queue stale start command BEFORE finished event arrives
+            self.app.emit("cmd", "start")
+            time.sleep(0.01)
+            self.app.emit("finished", time.monotonic())
+            with patch.object(self.app.root, "after"):
+                self.app.poll()
+            self.assertFalse(self.app.running)
+            m_start.assert_not_called()
+
+            # Fresh start command AFTER finished must succeed
+            time.sleep(0.01)
+            self.app.emit("cmd", "start")
+            with patch.object(self.app.root, "after"):
+                self.app.poll()
+            m_start.assert_called_once()
+
+    def test_method2_exit_holds_busy_continuously_across_esc_menu_and_lobby(self):
+        self.app.set_cfg("min", 1)
+        self.app.set_cfg("max", 1)
+        busy_samples = []
+
+        def fake_click(name, label, timeout=None):
+            busy_samples.append((name, self.engine.busy.is_set()))
+            if name == "play_button":
+                return True
+            if name == "return_lobby":
+                return True
+            return True
+
+        def fake_wait(sec):
+            busy_samples.append((f"wait:{sec}", self.engine.busy.is_set()))
+            if sec == 3.0:
+                self.engine.stop.set()
+
+        with patch.object(self.engine, "is_target_focused", return_value=True), \
+             patch.object(self.engine, "click", side_effect=fake_click), \
+             patch.object(self.engine, "wait", side_effect=fake_wait), \
+             patch.object(ff.random, "uniform", return_value=0.0), \
+             patch.object(ff, "send_key_hw"):
+            self.engine.method2()
+
+        # After Esc is sent, wait(0.8), click(menu_button), click(return_lobby), and wait(3.0) must all see busy=True
+        post_esc = [b for tag, b in busy_samples if tag != "play_button"]
+        self.assertEqual(len(post_esc), 4)
+        self.assertTrue(all(post_esc), f"busy dropped during method2 exit sequence: {busy_samples}")
+        self.assertFalse(self.engine.busy.is_set(), "busy must clear in finally after exit sequence")
+
+    def test_hover_z_order_below_text_and_scrimmed_sub_bars_ineligible(self):
+        self.app.page = "main"
+        self.app.running = False
+        self.app.set_cfg("swing", False)
+        self.app.set_cfg("walk", False)
+        self.app.rebuild_ui(snap=True)
+
+        self.assertFalse(self.app._is_hover_eligible("lmb_swing"))
+        self.assertFalse(self.app._is_hover_eligible("lmb_hold"))
+        self.assertFalse(self.app._is_hover_eligible("pace_norm"))
+        self.assertFalse(self.app._is_hover_eligible("pace_stand"))
+
+        self.app._set_hover_visual("cta_start", 1.0)
+        hid = self.app._hover_items.get("cta_start")
+        tx_id = self.app._canvas_items.get("cta_start_tx")
+        bg_id = self.app._canvas_items.get("cta_start_bg")
+        all_items = list(self.app.cv.find_all())
+        self.assertLess(all_items.index(bg_id), all_items.index(hid))
+        self.assertLess(all_items.index(hid), all_items.index(tx_id))
+
+        # Starting must clear ineligible cta_start hover
+        with patch.object(ff.threading, "Thread") as m_th:
+            self.app.start()
+            m_th.return_value.start.assert_called_once()
+        self.assertNotIn("cta_start", self.app._hover_items)
+
+    def test_rebuild_ui_stamps_animation_t0_after_prep_and_truncates_long_logs(self):
+        self.app.set_cfg("anim", True)
+        self.app.page = "main"
+        self.app.params_open = False
+        self.app.rebuild_ui(snap=True)
+        self.app.toggle_params()
+        after_toggle = time.monotonic()
+        grp_jobs = [j for k, j in self.app.anim_jobs.items() if k.startswith("grp:")]
+        self.assertTrue(grp_jobs)
+        for job in grp_jobs:
+            self.assertLess(after_toggle - job["t0"], 0.05, "Animation t0 was stamped before heavy prep!")
+
+        long_txt = "Очень длинное сообщение диагностического лога " * 5
+        fitted = self.app._fit_text(long_txt, 11.5, "rg", 500.0)
+        self.assertTrue(fitted.endswith("…"))
+        self.assertLess(len(fitted), len(long_txt))
+
+        # Check localized pause and Method 0 summary in Russian
+        self.app.set_cfg("lang", "ru")
+        self.assertEqual(self.app.ref({"key": "dt_strafe", "keys": None}), "Анти-АФК: пауза")
+        self.assertEqual(
+            self.app.ref({"key": "dt_m0_summary", "parts": ["m0_part_human", "m0_part_swing"]}),
+            "Анти-АФК + Кирка",
+        )
 
 
 if __name__ == "__main__":
