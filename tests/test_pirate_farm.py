@@ -233,6 +233,7 @@ class TestAppAndUI(unittest.TestCase):
         self.app.detail_ref = {"key": "dt_idle"}
         self.app.page = "main"
         self.app.rebuild_ui(snap=True)
+        self.assertEqual([t for t in self.app.cv.find_all() if self.app.cv.type(t) == "text"], [])
         img_main = self.app.render_headless_preview()
         self.assertIsNotNone(img_main)
         out_main = ART / "pirate_app_main.png"
@@ -240,8 +241,9 @@ class TestAppAndUI(unittest.TestCase):
         self.assertTrue(out_main.exists())
 
         # 2. Settings screen (RU)
-        self.app.page = "settings"
+        self.app.page = "set"
         self.app.rebuild_ui(snap=True)
+        self.assertEqual([t for t in self.app.cv.find_all() if self.app.cv.type(t) == "text"], [])
         img_set = self.app.render_headless_preview()
         self.assertIsNotNone(img_set)
         out_set = ART / "pirate_app_set.png"
@@ -270,6 +272,7 @@ class TestAppAndUI(unittest.TestCase):
         self.app.params_open = False
         self.app.detail_ref = {"key": "dt_idle"}
         self.app.set_lang("en")
+        self.app._stop_all_anims(snap=True)
         img_en = self.app.render_headless_preview()
         self.assertIsNotNone(img_en)
         out_en = ART / "pirate_app_en.png"
@@ -350,30 +353,33 @@ class TestAppAndUI(unittest.TestCase):
             for skey in ("immediate", "human", "swing", "space", "walk", "safe"):
                 clock[0] += 1.0
                 before_on = bool(self.app.live(skey))
-                _, thm_id_before, tx_off, tx_on = self.app._switch_items[skey]
+                sw_tuple_id = id(self.app._switch_items[skey])
                 self.app.flip(skey)
                 self.assertIn(f"sw:{skey}", self.app.anim_jobs, f"Missing switch anim for {skey}")
+                self.assertEqual(id(self.app._switch_items[skey]), sw_tuple_id, f"Unexpected rebuild on flip({skey})")
+                if skey in ("swing", "walk"):
+                    sub_k = "pickaxe" if skey == "swing" else "pace"
+                    self.assertIn(f"sub:{sub_k}", self.app.anim_jobs, f"Missing inline scrim fade for {skey}")
                 saw_mid, settled = self._drive_anims(clock, clock[0])
                 self.assertTrue(saw_mid, f"Midpoint never observed for {skey}")
                 self.assertTrue(settled, f"Anim did not return to idle for {skey}")
+                self.assertFalse(self.app._timer_1ms)
                 _, thm_id_after, tx_off, tx_on = self.app._switch_items[skey]
                 expected_x = tx_on if (not before_on) else tx_off
                 actual_x_dp = self.app.cv.coords(thm_id_after)[0] / self.app.S
                 self.assertAlmostEqual(actual_x_dp, expected_x, delta=1.5)
                 if skey in ("swing", "walk"):
-                    if not self.app.live(skey):
-                        self.assertEqual(len(self.app.cv.find_withtag("ui_mid")), 0)
-                    else:
-                        self.assertGreater(len(self.app.cv.find_withtag("ui_mid")), 0)
+                    sub_k = "pickaxe" if skey == "swing" else "pace"
+                    sid, _ = self.app._sub_scrims[sub_k]
+                    self.assertEqual(self.app.cv.itemcget(sid, "state"), "hidden" if self.app.live(skey) else "normal")
                     clock[0] += 1.0
                     self.app.flip(skey)
                     self.assertIn(f"sw:{skey}", self.app.anim_jobs)
+                    self.assertIn(f"sub:{sub_k}", self.app.anim_jobs)
                     saw_mid2, settled2 = self._drive_anims(clock, clock[0])
                     self.assertTrue(saw_mid2 and settled2)
-                    if not self.app.live(skey):
-                        self.assertEqual(len(self.app.cv.find_withtag("ui_mid")), 0)
-                    else:
-                        self.assertGreater(len(self.app.cv.find_withtag("ui_mid")), 0)
+                    sid2, _ = self.app._sub_scrims[sub_k]
+                    self.assertEqual(self.app.cv.itemcget(sid2, "state"), "hidden" if self.app.live(skey) else "normal")
 
     def test_page_method_lang_chip_params_and_hover_animations_land_cleanly(self):
         clock = [800.0]
@@ -402,18 +408,23 @@ class TestAppAndUI(unittest.TestCase):
             self.assertIn("item_y:method_act", self.app.anim_jobs)
             self.assertTrue(all(self._drive_anims(clock, clock[0])))
 
-            # Language switch (RU -> EN)
+            # Language switch (RU -> EN) crossfades body smoothly without vertical jump
             clock[0] += 1.0
             self.app.set_lang("en")
             self.assertIn("item_x:seg_thumb", self.app.anim_jobs)
+            self.assertIn("fade:lang", self.app.anim_jobs)
+            self.assertNotIn("grp:ui_body", self.app.anim_jobs)
             self.assertTrue(all(self._drive_anims(clock, clock[0])))
+            self.assertEqual(len(self.app.cv.find_withtag("ui_trans")), 0)
 
             # Page switch (Main -> Settings -> Main)
             clock[0] += 1.0
             self.app.toggle_page()
             self.assertEqual(self.app.page, "set")
             self.assertIn("grp:ui_body", self.app.anim_jobs)
+            self.assertIn("fade:page", self.app.anim_jobs)
             self.assertTrue(all(self._drive_anims(clock, clock[0])))
+            self.assertEqual(len(self.app.cv.find_withtag("ui_trans")), 0)
 
             # Toggle any_win on Settings
             clock[0] += 1.0
@@ -425,7 +436,9 @@ class TestAppAndUI(unittest.TestCase):
             self.app.toggle_page()
             self.assertEqual(self.app.page, "main")
             self.assertIn("grp:ui_body", self.app.anim_jobs)
+            self.assertIn("fade:page", self.app.anim_jobs)
             self.assertTrue(all(self._drive_anims(clock, clock[0])))
+            self.assertEqual(len(self.app.cv.find_withtag("ui_trans")), 0)
 
             # Chip pair without rebuild
             clock[0] += 1.0

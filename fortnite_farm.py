@@ -51,6 +51,14 @@ except Exception:
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 kernel32 = ctypes.windll.kernel32
+try:
+    winmm = ctypes.WinDLL("winmm", use_last_error=True)
+    winmm.timeBeginPeriod.argtypes = [wintypes.UINT]
+    winmm.timeBeginPeriod.restype = wintypes.UINT
+    winmm.timeEndPeriod.argtypes = [wintypes.UINT]
+    winmm.timeEndPeriod.restype = wintypes.UINT
+except Exception:
+    winmm = None
 
 
 class MONITORINFO(ctypes.Structure):
@@ -357,21 +365,21 @@ C_FOOTER_BG = (10, 11, 14)    # #0A0B0E
 C_CARD = (16, 18, 22)         # #101216
 C_CARD_HOV = (21, 24, 30)     # #15181E
 C_CARD_ACT = (24, 28, 36)     # #181C24
-C_SUNK = (9, 10, 13)          # #090A0D
-C_CTRL = (23, 26, 33)         # #171A21
-C_CTRL_HOV = (30, 34, 43)     # #1E222B
-C_SWITCH_OFF = (28, 31, 39)   # #1C1F27
+C_SUNK = (10, 11, 15)         # #0A0B0F
+C_CTRL = (24, 27, 35)         # #181B23
+C_CTRL_HOV = (32, 36, 46)     # #20242E
+C_SWITCH_OFF = (30, 34, 43)   # #1E222B
 
 C_BORDER_SUB = (34, 37, 45, 255)      # subtle card hairline (#22252D)
 C_BORDER_MED = (48, 52, 62, 255)      # header / window hairline (#30343E)
 C_BORDER_CTRL = (76, 82, 96, 255)     # >= 3:1 control outline (#4C5260)
 C_BORDER_ACT = (128, 136, 154, 255)   # active / selected outline (#80889A)
 
-C_TX = (244, 245, 247)        # #F4F5F7 (17+:1)
-C_TX2 = (164, 170, 184)       # #A4AAB8 (8.0+:1)
-C_TX3 = (130, 136, 151)       # #828897 (5.2+:1)
+C_TX = (242, 244, 248)        # #F2F4F8 (17+:1, soft white)
+C_TX2 = (176, 182, 196)       # #B0B6C4 (8.8:1, soft readable slate)
+C_TX3 = (138, 145, 160)       # #8A91A0 (5.6:1, muted metadata)
 
-C_CTA_BG = (244, 245, 247)    # #F4F5F7
+C_CTA_BG = (242, 244, 248)    # #F2F4F8
 C_CTA_HOV = (255, 255, 255)   # #FFFFFF
 C_CTA_FG = (9, 9, 11)         # #09090B
 
@@ -380,10 +388,10 @@ C_RUN = (96, 165, 250)        # #60A5FA
 C_STOP = (248, 113, 113)      # #F87171
 
 FONT_FILES = {
-    "rg": ("Inter-Regular.otf", "segoeui.ttf"),
-    "md": ("Inter-Medium.otf", "segoeui.ttf"),
-    "sb": ("Inter-SemiBold.otf", "seguisb.ttf"),
-    "bd": ("Inter-Bold.otf", "segoeuib.ttf"),
+    "rg": ("Inter-Regular.otf", "SegUIVar.ttf", "segoeui.ttf"),
+    "md": ("Inter-Medium.otf", "SegUIVar.ttf", "seguisb.ttf"),
+    "sb": ("Inter-SemiBold.otf", "SegUIVar.ttf", "seguisb.ttf"),
+    "bd": ("Inter-Bold.otf", "SegUIVar.ttf", "segoeuib.ttf"),
 }
 
 TEXT = {
@@ -1521,10 +1529,10 @@ def mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int
 
 
 def register_private_fonts() -> None:
-    """Register bundled Inter OTF fonts privately so Win32 GDI/Tk/PIL share clean metrics."""
+    """Register bundled fallback OTF fonts privately if Windows fonts are unavailable."""
     fdir = FONTS_DIR
-    for fn, _ in FONT_FILES.values():
-        p = fdir / fn
+    for own, _, _ in FONT_FILES.values():
+        p = fdir / own
         if p.exists():
             try:
                 gdi32.AddFontResourceExW(str(p), 0x10, 0)
@@ -1533,10 +1541,9 @@ def register_private_fonts() -> None:
 
 
 def font_candidates(weight: str) -> list[str]:
-    own, win = FONT_FILES.get(weight, FONT_FILES["rg"])
-    c = [str(FONTS_DIR / own)]
+    own, var_win, win = FONT_FILES.get(weight, FONT_FILES["rg"])
     wd = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-    c.append(str(wd / win))
+    c = [str(wd / var_win), str(wd / win), str(wd / "segoeui.ttf"), str(FONTS_DIR / own)]
     c.append(str(wd / ("arialbd.ttf" if weight in ("sb", "bd") else "arial.ttf")))
     return c
 
@@ -1606,9 +1613,17 @@ class App:
         self.anim_jobs: dict[str, dict] = {}
         self.anim_running = False
         self._anim_after_id = None
+        self._timer_1ms = False
         self._pending_geo_wh: tuple[int, int] | None = None
+        self._geo_anim: tuple[int, int] | None = None
         self._slice_photos: list[ImageTk.PhotoImage] = []
-        self.fonts: dict[tuple[float, str], ImageFont.FreeTypeFont] = {}
+        self._trans_photos: list[ImageTk.PhotoImage] = []
+        self._grad_cache: dict[tuple[int, int], Image.Image] = {}
+        self._text_cache: dict[tuple, tuple[Image.Image, ImageTk.PhotoImage]] = {}
+        self._dyn_pil: dict[str, tuple[Image.Image, str, float, float]] = {}
+        self._sub_scrims: dict[str, tuple[int, float]] = {}
+        self._sub_bars: dict[str, tuple[float, float, float, float]] = {}
+        self.fonts: dict[tuple, ImageFont.FreeTypeFont] = {}
         self.sprites: dict[str, ImageTk.PhotoImage] = {}
         self._pil_sprites: dict[str, Image.Image] = {}
         self.dyn_photos: dict[str, ImageTk.PhotoImage] = {}
@@ -1617,7 +1632,7 @@ class App:
         self._canvas_items: dict[str, int] = {}
         self._switch_items: dict[str, tuple[int, int, float, float]] = {}
         self._switch_pos: dict[str, tuple[float, float]] = {}
-        self._chip_items: dict[str, tuple[int, int, int, int, str, str]] = {}
+        self._chip_items: dict[str, tuple[int, int, int, str, str]] = {}
         self._radio_items: dict[int, int] = {}
         self._method_ys: dict[int, float] = {}
         self._hover_rects: dict[str, tuple[str, float, float, str, str]] = {}
@@ -1631,6 +1646,7 @@ class App:
         self._hint_pos: tuple[float, float] = (0.0, 0.0)
         self._seg_pos: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
         self._chev_center: tuple[float, float] = (0.0, 0.0)
+        self._chip_placements: list[tuple[str, float, float, float, float, str, bool]] = []
 
         self.regions: list[tuple[str, float, float, float, float, object]] = []
         self.hover_id: str | None = None
@@ -1772,15 +1788,23 @@ class App:
         self.root.geometry(f"{ww}x{wh}+{x}+{y}")
 
     # ---------------- PIL Typography & Pre-Baked Sprites ----------------
-    def fnt(self, size: float, w: str = "rg") -> ImageFont.FreeTypeFont:
-        key = (round(size * self.S, 1), w)
+    def fnt(self, size: float, w: str = "rg", opsz_dp: float | None = None) -> ImageFont.FreeTypeFont:
+        op = clamp(opsz_dp if opsz_dp is not None else (size * 0.5 if size > 18.0 else size), 10.0, 32.0)
+        key = (round(size * self.S, 1), w, round(op, 1))
         f = self.fonts.get(key)
         if f is None:
             px = max(9, int(round(size * self.S)))
+            wght_map = {"rg": 400.0, "md": 530.0, "sb": 600.0, "bd": 660.0}
             for path in font_candidates(w):
                 if Path(path).exists():
                     try:
-                        f = ImageFont.truetype(path, px)
+                        cand = ImageFont.truetype(path, px)
+                        if Path(path).name.lower() == "seguivar.ttf":
+                            try:
+                                cand.set_variation_by_axes([wght_map.get(w, 400.0), op])
+                            except Exception:
+                                pass
+                        f = cand
                         break
                     except Exception:
                         pass
@@ -1791,10 +1815,48 @@ class App:
 
     def text_w(self, font: ImageFont.FreeTypeFont, s: str) -> float:
         try:
-            bb = font.getbbox(s)
-            return float(bb[2] - bb[0])
+            return float(font.getlength(s))
         except Exception:
-            return float(len(s) * 7)
+            try:
+                bb = font.getbbox(s)
+                return float(bb[2] - bb[0])
+            except Exception:
+                return float(len(s) * 7)
+
+    def _text_sprite(self, text: str, size_dp: float, wt: str, col_rgb: tuple[int, int, int]) -> tuple[Image.Image, ImageTk.PhotoImage]:
+        key = (text, round(size_dp, 1), wt, col_rgb, round(self.S, 2))
+        cached = self._text_cache.get(key)
+        if cached is not None:
+            return cached
+        if not text:
+            im = Image.new("RGBA", (2, 2), (0, 0, 0, 0))
+            ph = ImageTk.PhotoImage(im, master=self.root)
+            res = (im, ph)
+            self._text_cache[key] = res
+            return res
+        ss = 2.0
+        R = self.S * ss
+        fn = self.fnt(size_dp * ss, wt, opsz_dp=size_dp)
+        try:
+            bb = fn.getbbox(text, anchor="lm")
+            bx0, by0, bx1, by1 = bb
+        except Exception:
+            bx0, by0, bx1, by1 = 0, -int(size_dp * R * 0.6), int(self.text_w(fn, text)), int(size_dp * R * 0.4)
+        pad_x = max(2, -bx0 + int(round(2.5 * R)))
+        w_r = max(4, bx1 - min(0, bx0) + int(round(5.0 * R)))
+        h_r = max(8, int(math.ceil(size_dp * 1.48 * R)), (by1 - by0) + int(round(4.0 * R)))
+        im_2x = Image.new("RGBA", (w_r, h_r), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im_2x)
+        d.text((pad_x, h_r * 0.5), text, font=fn, fill=col_rgb + (255,), anchor="lm")
+        w_1x = max(2, int(round(w_r / ss)))
+        h_1x = max(4, int(round(h_r / ss)))
+        im_1x = im_2x.resize((w_1x, h_1x), Image.Resampling.LANCZOS)
+        ph = ImageTk.PhotoImage(im_1x, master=self.root)
+        if len(self._text_cache) > 256:
+            self._text_cache.clear()
+        res = (im_1x, ph)
+        self._text_cache[key] = res
+        return res
 
     def _draw_rr(self, draw: ImageDraw.ImageDraw, x: float, y: float, w: float, h: float, r: float, fill=None, outline=None, lw: float = 1.0) -> None:
         x0, y0, x1, y1 = int(round(x)), int(round(y)), int(round(x + w)), int(round(y + h))
@@ -1844,23 +1906,23 @@ class App:
             d.ellipse((pad, pad, im.width - 1 - pad, im.height - 1 - pad), fill=fill, outline=ring, width=max(1, int(round(lw_dp * R))) if ring else 0)
             reg_sprite(name, im.resize((p, p), Image.Resampling.LANCZOS))
 
-        # 9-step interpolated switch tracks and thumbs for smooth color + slide morphing
-        for i in range(9):
-            t = i / 8.0
+        # 17-step interpolated switch tracks and thumbs for 60 FPS smooth color + glide
+        for i in range(17):
+            t = i / 16.0
             trk_f = self._lerp_rgb(C_SWITCH_OFF, C_CTA_BG, t) + (255,)
             trk_b = self._lerp_rgb(C_BORDER_CTRL, C_CTA_BG, t) + (255,)
             make_rr_sprite(f"trk_{i}", 40, 22, 11, trk_f, trk_b, 1.0)
             thm_f = self._lerp_rgb(C_TX2, C_CTA_FG, t) + (255,)
             make_circle_sprite(f"thm_{i}", 16, thm_f)
         alias_sprite("trk_off", "trk_0")
-        alias_sprite("trk_on", "trk_8")
+        alias_sprite("trk_on", "trk_16")
         alias_sprite("thm_off", "thm_0")
-        alias_sprite("thm_on", "thm_8")
+        alias_sprite("thm_on", "thm_16")
 
-        # 7-step interpolated radio frames (smooth ring brighten + dot pop-in)
+        # 13-step interpolated radio frames (smooth ring brighten + soft dot scale)
         pr = max(8, int(round(18 * self.S)))
-        for i in range(7):
-            t = i / 6.0
+        for i in range(13):
+            t = i / 12.0
             rim = Image.new("RGBA", (int(round(pr * ss)), int(round(pr * ss))), (0, 0, 0, 0))
             rd = ImageDraw.Draw(rim)
             bd = self._lerp_rgb(C_BORDER_CTRL, C_CTA_BG, t) + (255,)
@@ -1873,25 +1935,62 @@ class App:
             if t > 0.02:
                 cx_r = rim.width * 0.5
                 max_dr = max(1.0, cx_r - 5 * R)
-                dr = max(1.0, max_dr * (0.22 + 0.78 * t))
-                dot_c = self._lerp_rgb(C_SWITCH_OFF, C_CTA_BG, min(1.0, 0.35 + 0.65 * t)) + (255,)
+                dr = max(1.0, max_dr * (0.20 + 0.80 * t))
+                dot_c = self._lerp_rgb(C_SWITCH_OFF, C_CTA_BG, min(1.0, 0.30 + 0.70 * t)) + (255,)
                 rd.ellipse((cx_r - dr, cx_r - dr, cx_r + dr, cx_r + dr), fill=dot_c)
             reg_sprite(f"rad_{i}", rim.resize((pr, pr), Image.Resampling.LANCZOS))
         alias_sprite("rad_off", "rad_0")
-        alias_sprite("rad_on", "rad_6")
+        alias_sprite("rad_on", "rad_12")
 
-        # Header RU/EN sliding thumb + sliding method card selection highlight
+        # Header RU/EN sliding thumb, crisp 2x LANCZOS labels & method active card glow
         cw = self.W - 32.0
         make_rr_sprite("seg_thumb", 37.0, 28.0, 6.0, C_CTRL_HOV + (255,), C_BORDER_ACT, 1.0)
-        make_rr_sprite("method_act_bg", cw - 20.0, 44.0, 8.0, (175, 190, 225, 22), C_BORDER_ACT, 1.1)
+        make_rr_sprite("method_act_bg", cw - 20.0, 46.0, 8.0, (175, 190, 225, 22), C_BORDER_ACT, 1.1)
+        for lng_k, lbl_txt in (("ru", "RU"), ("en", "EN")):
+            for st_tag, col_rgb in (("act", C_TX), ("dim", C_TX2)):
+                pw_l, ph_l = max(16, int(round(34.0 * self.S))), max(14, int(round(24.0 * self.S)))
+                im_l = Image.new("RGBA", (int(round(pw_l * ss)), int(round(ph_l * ss))), (0, 0, 0, 0))
+                dl = ImageDraw.Draw(im_l)
+                fn_l = self.fnt(12.0 * ss, "sb", opsz_dp=12.0)
+                dl.text((im_l.width * 0.5, im_l.height * 0.5), lbl_txt, font=fn_l, fill=col_rgb + (255,), anchor="mm")
+                reg_sprite(f"seg_{lng_k}_{st_tag}", im_l.resize((pw_l, ph_l), Image.Resampling.LANCZOS))
 
-        # 5-step interpolated choice chips (smooth fill & border transition without full redraw)
-        for ch_w, ch_h in ((128, 24), (108, 24), (114, 24), (104, 24), (122, 26), (86, 26)):
-            for step in range(5):
-                t = step / 4.0
-                cf = self._lerp_rgb(C_SUNK, C_CTRL_HOV, t) + (255,)
-                cb = self._lerp_rgb(C_BORDER_CTRL, C_BORDER_ACT, t) + (255,)
-                make_rr_sprite(f"chip_{ch_w}_{ch_h}_{step}", float(ch_w), float(ch_h), 6.0, cf, cb, 1.0)
+        # 13-step choice chips with integrated 2x LANCZOS text (zero Win32 GDI Arial mismatch)
+        chip_defs = (
+            ("lmb_swing", "lmb_swings", 132.0, 24.0),
+            ("lmb_hold", "lmb_hold", 108.0, 24.0),
+            ("pace_norm", "pace_norm", 118.0, 24.0),
+            ("pace_stand", "pace_stand", 104.0, 24.0),
+            ("anim_on", "anim_on", 128.0, 26.0),
+            ("anim_off", "anim_off", 88.0, 26.0),
+        )
+        for lng in ("ru", "en"):
+            for cid, tkey, ch_w, ch_h in chip_defs:
+                lbl = TEXT[lng][tkey]
+                fn_c = self.fnt(12.0 * ss, "md", opsz_dp=12.0)
+                pw, ph = max(2, int(round(ch_w * self.S))), max(2, int(round(ch_h * self.S)))
+                for step in range(13):
+                    t = step / 12.0
+                    cf = self._lerp_rgb(C_SUNK, C_CTRL_HOV, t) + (255,)
+                    cb = self._lerp_rgb(C_BORDER_CTRL, C_BORDER_ACT, t) + (255,)
+                    ct = self._lerp_rgb(C_TX2, C_TX, t) + (255,)
+                    im = Image.new("RGBA", (int(round(pw * ss)), int(round(ph * ss))), (0, 0, 0, 0))
+                    d = ImageDraw.Draw(im)
+                    d.rounded_rectangle(
+                        (int(R * 0.5), int(R * 0.5), im.width - 1 - int(R * 0.5), im.height - 1 - int(R * 0.5)),
+                        radius=max(1, int(round(6.0 * R))),
+                        fill=cf,
+                        outline=cb,
+                        width=max(1, int(round(R))),
+                    )
+                    d.text((im.width * 0.5, im.height * 0.5), lbl, font=fn_c, fill=ct, anchor="mm")
+                    reg_sprite(f"chip_{cid}_{lng}_{step}", im.resize((pw, ph), Image.Resampling.LANCZOS))
+
+        # 9-step soft obsidian sub-bar muted scrims (when swing/walk switch is off)
+        sub_rw = cw - 20.0
+        for step in range(1, 9):
+            a = int(round(168 * (step / 8.0)))
+            make_rr_sprite(f"sub_scrim_{step}", sub_rw, 26.0, 6.0, C_CARD + (a,), None, 0.0)
 
         # Rounded CTA / Hotkey sprites matching footer/settings layout geometry
         stop_w = 148.0
@@ -1903,43 +2002,45 @@ class App:
         make_rr_sprite("bind_idle", 74.0, 30.0, 7.0, C_CTRL + (255,), (104, 110, 125, 255), 1.0)
         make_rr_sprite("bind_cap", 74.0, 30.0, 7.0, C_CTA_BG + (255,), C_CTA_BG + (255,), 1.0)
 
-        # 4-step translucent hover highlight overlays (no center occlusion)
-        def make_hover_set(prefix: str, w_dp: float, h_dp: float, r_dp: float, fill_alpha: int = 12, bd_alpha: int = 185, lw_dp: float = 1.1) -> None:
-            for step in range(1, 5):
-                frac = step / 4.0
+        # 10-step soft hover highlight overlays
+        def make_hover_set(prefix: str, w_dp: float, h_dp: float, r_dp: float, fill_alpha: int = 8, bd_alpha: int = 145, lw_dp: float = 1.0, bd_rgb=None) -> None:
+            bcol = bd_rgb if bd_rgb is not None else C_BORDER_ACT[:3]
+            for step in range(1, 11):
+                frac = step / 10.0
                 hf = (255, 255, 255, int(round(fill_alpha * frac)))
-                hb = C_BORDER_ACT[:3] + (int(round(bd_alpha * frac)),)
+                hb = bcol + (int(round(bd_alpha * frac)),)
                 make_rr_sprite(f"hov_{prefix}_{step}", w_dp, h_dp, r_dp, hf, hb, lw_dp)
 
+        make_hover_set("row_46", cw - 20.0, 46.0, 8.0)
         make_hover_set("row_44", cw - 20.0, 44.0, 8.0)
         make_hover_set("row_42", cw - 20.0, 42.0, 8.0)
-        make_hover_set("row_40", cw - 20.0, 40.0, 8.0)
         make_hover_set("row_34", cw - 20.0, 34.0, 8.0)
-        make_hover_set("mini_30", 30.0, 30.0, 7.0, fill_alpha=24, bd_alpha=215)
-        make_hover_set("nav_btn", 96.0, 34.0, 8.0, fill_alpha=18, bd_alpha=210)
-        make_hover_set("bind_btn", 74.0, 30.0, 7.0, fill_alpha=18, bd_alpha=215)
-        make_hover_set("undo_btn", 82.0, 24.0, 6.0, fill_alpha=22, bd_alpha=215)
-        make_hover_set("lang_half", 37.0, 28.0, 6.0, fill_alpha=14, bd_alpha=155)
-        make_hover_set("cta_start", start_w, 38.0, 9.0, fill_alpha=34, bd_alpha=240, lw_dp=1.3)
-        make_hover_set("cta_stop", stop_w, 38.0, 9.0, fill_alpha=16, bd_alpha=200, lw_dp=1.1)
-        for ch_w, ch_h in ((128, 24), (108, 24), (114, 24), (104, 24), (122, 26), (86, 26)):
-            make_hover_set(f"chip_{ch_w}_{ch_h}", float(ch_w), float(ch_h), 6.0, fill_alpha=16, bd_alpha=195)
+        make_hover_set("mini_30", 30.0, 30.0, 7.0, fill_alpha=18, bd_alpha=185)
+        make_hover_set("nav_btn", 96.0, 34.0, 8.0, fill_alpha=14, bd_alpha=180)
+        make_hover_set("bind_btn", 74.0, 30.0, 7.0, fill_alpha=14, bd_alpha=190)
+        make_hover_set("undo_btn", 82.0, 24.0, 6.0, fill_alpha=18, bd_alpha=190)
+        make_hover_set("lang_half", 37.0, 28.0, 6.0, fill_alpha=10, bd_alpha=125)
+        make_hover_set("cta_start", start_w, 38.0, 9.0, fill_alpha=32, bd_alpha=245, lw_dp=1.2, bd_rgb=(255, 255, 255))
+        make_hover_set("cta_stop", stop_w, 38.0, 9.0, fill_alpha=14, bd_alpha=185, lw_dp=1.0)
+        for ch_w, ch_h in ((132, 24), (108, 24), (118, 24), (104, 24), (128, 26), (88, 26)):
+            make_hover_set(f"chip_{ch_w}_{ch_h}", float(ch_w), float(ch_h), 6.0, fill_alpha=12, bd_alpha=175)
 
-        # 8-step status dot pulse halo rings (rendered around pill dot ONLY while running/stopping)
+        # 32-step cosine breathing pulse halo rings (fluid 42 FPS ring expansion, 0 idle CPU)
         p_size = max(12, int(round(22.0 * self.S)))
         for st_k, col_rgb in (("starting", C_RUN), ("running", C_RUN), ("stopping", C_STOP)):
-            for step in range(8):
-                t = step / 7.0
+            for step in range(32):
+                t = step / 31.0
+                e_t = 1.0 - (1.0 - t) ** 2.2
                 pim = Image.new("RGBA", (int(round(p_size * ss)), int(round(p_size * ss))), (0, 0, 0, 0))
                 pd = ImageDraw.Draw(pim)
                 cx_p = pim.width * 0.5
-                rad_p = (3.6 + 5.6 * t) * R
-                alpha_p = int(round(210 * (1.0 - t) ** 1.3))
+                rad_p = (3.4 + 6.4 * e_t) * R
+                alpha_p = int(round(195 * (1.0 - t) ** 1.45))
                 if alpha_p > 0:
                     pd.ellipse(
                         (cx_p - rad_p, cx_p - rad_p, cx_p + rad_p, cx_p + rad_p),
                         outline=col_rgb + (alpha_p,),
-                        width=max(1, int(round(1.3 * R))),
+                        width=max(1, int(round(1.25 * R))),
                     )
                 reg_sprite(f"pulse_{st_k}_{step}", pim.resize((p_size, p_size), Image.Resampling.LANCZOS))
 
@@ -1953,48 +2054,113 @@ class App:
         for lng in ("ru", "en"):
             for st_key, (dot_c, bg_c, bd_c) in pill_styles.items():
                 st_txt = TEXT[lng][f"st_{st_key}"]
-                fn_2x = self.fnt(11.5 * ss, "md")
+                fn_2x = self.fnt(12.0 * ss, "md", opsz_dp=12.0)
                 tw_dp = self.text_w(fn_2x, st_txt) / R
                 pw_dp = tw_dp + 32.0
-                ph_dp = 21.0
+                ph_dp = 22.0
                 pw, ph = max(8, int(round(pw_dp * self.S))), max(8, int(round(ph_dp * self.S)))
                 pim = Image.new("RGBA", (int(round(pw * ss)), int(round(ph * ss))), (0, 0, 0, 0))
                 pd = ImageDraw.Draw(pim)
                 pd.rounded_rectangle(
                     (int(0.5 * R), int(0.5 * R), pim.width - 1 - int(0.5 * R), pim.height - 1 - int(0.5 * R)),
-                    radius=max(2, int(round(10.5 * R))),
+                    radius=max(2, int(round(11.0 * R))),
                     fill=bg_c,
                     outline=bd_c,
                     width=max(1, int(round(1.0 * R))),
                 )
-                dx0, dy0 = int(round(8.5 * R)), int(round(7.0 * R))
-                dx1, dy1 = int(round(15.5 * R)), int(round(14.0 * R))
+                dx0, dy0 = int(round(8.5 * R)), int(round(7.5 * R))
+                dx1, dy1 = int(round(15.5 * R)), int(round(14.5 * R))
                 pd.ellipse((dx0, dy0, dx1, dy1), fill=dot_c + (255,))
                 pd.text((21.0 * R, ph_dp * 0.5 * R), st_txt, font=fn_2x, fill=dot_c + (255,), anchor="lm")
                 reg_sprite(f"pill_{lng}_{st_key}", pim.resize((pw, ph), Image.Resampling.LANCZOS))
 
     # ---------------- Static Layer Cache & Dynamic Canvas Construction ----------------
     def _gradient_bg(self, w: int, h: int) -> Image.Image:
+        cached = self._grad_cache.get((w, h))
+        if cached is not None:
+            return cached.copy()
         t = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
         r = (C_BG_TOP[0] + (C_BG_BOT[0] - C_BG_TOP[0]) * t).clip(0, 255).astype(np.uint8)
         g = (C_BG_TOP[1] + (C_BG_BOT[1] - C_BG_TOP[1]) * t).clip(0, 255).astype(np.uint8)
         b = (C_BG_TOP[2] + (C_BG_BOT[2] - C_BG_TOP[2]) * t).clip(0, 255).astype(np.uint8)
         col = np.dstack([r, g, b])
         arr = np.broadcast_to(col, (h, w, 3)).copy()
-        return Image.fromarray(arr, mode="RGB").convert("RGBA")
+        im = Image.fromarray(arr, mode="RGB").convert("RGBA")
+        if len(self._grad_cache) > 12:
+            self._grad_cache.clear()
+        self._grad_cache[(w, h)] = im
+        return im.copy()
+
+    def _set_timer_res(self, enable: bool) -> None:
+        if HEADLESS or winmm is None:
+            return
+        if enable and not self._timer_1ms:
+            try:
+                winmm.timeBeginPeriod(1)
+                self._timer_1ms = True
+            except Exception:
+                pass
+        elif not enable and self._timer_1ms:
+            try:
+                winmm.timeEndPeriod(1)
+                self._timer_1ms = False
+            except Exception:
+                pass
+
+    def _set_root_wh(self, w_px: int, h_px: int) -> None:
+        if HEADLESS:
+            return
+        cur_geo = self.root.geometry()
+        parts = cur_geo.split("+")
+        if len(parts) == 3:
+            self.root.geometry(f"{w_px}x{h_px}+{parts[1]}+{parts[2]}")
+        else:
+            self.root.geometry(f"{w_px}x{h_px}")
 
     def _commit_pending_geo(self) -> None:
-        """Apply deferred window shrink once collapse or page slide finishes."""
+        """Apply final target window size once expand, collapse or page transition finishes."""
         wh = self._pending_geo_wh
         self._pending_geo_wh = None
+        self._geo_anim = None
         if wh is not None and not HEADLESS:
-            cur_geo = self.root.geometry()
-            parts = cur_geo.split("+")
             w_px, h_px = wh
-            if len(parts) == 3:
-                self.root.geometry(f"{w_px}x{h_px}+{parts[1]}+{parts[2]}")
-            else:
-                self.root.geometry(f"{w_px}x{h_px}")
+            self.cv.configure(height=h_px)
+            self._set_root_wh(w_px, h_px)
+
+    def _place_dyn_text(
+        self,
+        key: str,
+        text: str,
+        x_dp: float,
+        y_dp: float,
+        size_dp: float,
+        wt: str,
+        col_rgb: tuple[int, int, int],
+        anchor: str = "w",
+        tags: tuple[str, ...] = ("layer_topbot_fg",),
+    ) -> None:
+        im_1x, ph = self._text_sprite(text, size_dp, wt, col_rgb)
+        self.dyn_photos[key] = ph
+        if anchor == "w":
+            px_x = int(round((x_dp - 2.5) * self.S))
+        elif anchor == "e":
+            px_x = int(round((x_dp + 2.5) * self.S))
+        else:
+            px_x = int(round(x_dp * self.S))
+        px_y = int(round(y_dp * self.S))
+        self._canvas_items[key] = self.cv.create_image(px_x, px_y, anchor=anchor, image=ph, tags=tags)
+        self._dyn_pil[key] = (im_1x, anchor, x_dp, y_dp)
+
+    def _set_dyn_text(self, key: str, text: str, size_dp: float, wt: str, col_rgb: tuple[int, int, int]) -> None:
+        iid = self._canvas_items.get(key)
+        if not iid:
+            return
+        im_1x, ph = self._text_sprite(text, size_dp, wt, col_rgb)
+        self.dyn_photos[key] = ph
+        self.cv.itemconfigure(iid, image=ph)
+        prev = self._dyn_pil.get(key)
+        if prev is not None:
+            self._dyn_pil[key] = (im_1x, prev[1], prev[2], prev[3])
 
     def _capture_switch_fracs(self) -> dict[str, float]:
         """Capture current visual progress [0.0..1.0] for every switch before rebuild_ui."""
@@ -2013,7 +2179,7 @@ class App:
         return fracs
 
     def _snapshot_composite(self) -> Image.Image | None:
-        """Return full 1x composite of the current frame for smooth collapse slicing."""
+        """Return full 1x composite of the current frame for smooth transitions."""
         if not self._headless_meta or "base" not in self._headless_meta:
             return None
         return self.render_headless_preview()
@@ -2030,49 +2196,54 @@ class App:
             self._anim_after_id = None
         self.anim_jobs.clear()
         self.anim_running = False
+        self._set_timer_res(False)
 
         self.regions.clear()
         self.cv.delete("all")
         self._canvas_items.clear()
+        self.dyn_photos.clear()
+        self._dyn_pil.clear()
         self._switch_items.clear()
         self._switch_pos.clear()
         self._chip_items.clear()
+        self._chip_placements.clear()
         self._radio_items.clear()
         self._method_ys.clear()
         self._hover_rects.clear()
         self._hover_items.clear()
         self._hover_levels.clear()
         self._sub_bounds.clear()
+        self._sub_bars.clear()
+        self._sub_scrims.clear()
         self._slice_photos.clear()
+        self._trans_photos.clear()
         self.hover_id = None
 
         lang = self.live("lang")
         method = int(self.live("method"))
-        swing_on = bool(self.live("swing"))
-        walk_on = bool(self.live("walk"))
 
-        # Compute exact layout geometry (dp units)
+        # Compute exact layout geometry (dp units) with comfortable vertical breathing room
         pad = 16.0
         cw = self.W - pad * 2
         header_h = 56.0
-        footer_h = (124.0 if self.undo_snap is not None else 82.0)
+        footer_h = (118.0 if self.undo_snap is not None else 78.0)
 
-        y = header_h + 10.0
+        y = header_h + 9.0
         layout_blocks = []
 
         if self.page == "main":
             # Card 1: Game Methods + Optional Expanded Params
             m_pad = 10.0
             m_inner = cw - m_pad * 2
-            m_y = y + m_pad + 22.0  # card header title row
+            m_y = y + m_pad + 21.0
             method_rects = []
             for mval, tk_t, tk_d in (
                 (1, "m1_title", "m1_desc"),
                 (2, "m2_title", "m2_desc"),
                 (0, "m0_title", "m0_desc"),
             ):
-                method_rects.append((mval, tk_t, tk_d, m_y, m_inner, 44.0))
-                m_y += 44.0 + 6.0
+                method_rects.append((mval, tk_t, tk_d, m_y, m_inner, 46.0))
+                m_y += 46.0 + 6.0
 
             params_btn_y = m_y + 2.0
             params_btn_h = 34.0
@@ -2080,50 +2251,50 @@ class App:
             params_box = None
             if self.params_open:
                 p_row1_y = m_y + 6.0
-                p_row2_y = p_row1_y + 44.0 + 6.0
-                m_y = p_row2_y + 42.0
+                p_row2_y = p_row1_y + 46.0 + 6.0
+                m_y = p_row2_y + 44.0
                 params_box = (p_row1_y, p_row2_y)
 
             card1_h = (m_y - y) + m_pad
             layout_blocks.append(("methods", y, card1_h, method_rects, params_btn_y, params_btn_h, params_box))
-            y += card1_h + 10.0
+            y += card1_h + 9.0
 
-            # Card 2: Anti-AFK Behavior
-            a_y = y + m_pad + 22.0
+            # Card 2: Anti-AFK Behavior (inline sub-bars stay steady; smooth scrim dims when off)
+            a_y = y + m_pad + 21.0
             afk_rows = []
             afk_defs = [
                 ("immediate", "imm_title", "imm_desc", None),
                 ("human", "human_title", "human_desc", None),
-                ("swing", "swing_title", "swing_desc", "pickaxe" if swing_on else None),
+                ("swing", "swing_title", "swing_desc", "pickaxe"),
                 ("space", "space_title", "space_desc", None),
-                ("walk", "walk_title", "walk_desc", "pace" if walk_on else None),
+                ("walk", "walk_title", "walk_desc", "pace"),
             ]
             for idx, (cfg_key, t_k, d_k, sub_kind) in enumerate(afk_defs):
-                afk_rows.append((cfg_key, t_k, d_k, a_y, 40.0, sub_kind))
-                a_y += 40.0
+                afk_rows.append((cfg_key, t_k, d_k, a_y, 42.0, sub_kind))
+                a_y += 42.0
                 if sub_kind:
-                    a_y += 30.0
+                    a_y += 29.0
                 if idx < len(afk_defs) - 1:
-                    a_y += 6.0
+                    a_y += 5.0
             card2_h = (a_y - y) + m_pad
             layout_blocks.append(("afk", y, card2_h, afk_rows))
-            y += card2_h + 10.0
+            y += card2_h + 9.0
 
             # Card 3: Live Status & Log
             card3_h = 72.0
             layout_blocks.append(("status", y, card3_h))
-            y += card3_h + 10.0
+            y += card3_h + 9.0
         else:
             # Settings Page
-            c1_h = 84.0
+            c1_h = 90.0
             layout_blocks.append(("perf", y, c1_h))
             y += c1_h + 12.0
 
-            c2_h = 226.0
+            c2_h = 236.0
             layout_blocks.append(("calib", y, c2_h))
             y += c2_h + 12.0
 
-            c3_h = 86.0
+            c3_h = 90.0
             layout_blocks.append(("about", y, c3_h))
             y += c3_h + 14.0
 
@@ -2142,24 +2313,24 @@ class App:
         base = self._gradient_bg(Wr, Hr)
         draw = ImageDraw.Draw(base, "RGBA")
 
-        def dr_txt(x_dp: float, y_dp: float, s: str, sz: float, wt: str, col: tuple, anchor: str = "la"):
-            fn = self.fnt(sz * ss, wt)
-            draw.text((x_dp * R, y_dp * R), s, font=fn, fill=col, anchor=anchor)
+        def dr_txt(x_dp: float, y_dp: float, s: str, sz: float, wt: str, col: tuple, anchor: str = "lm"):
+            fn = self.fnt(sz * ss, wt, opsz_dp=sz)
+            draw.text((x_dp * R, y_dp * R), s, font=fn, fill=col + (255,) if len(col) == 3 else col, anchor=anchor)
 
         def dr_box(x_dp: float, y_dp: float, w_dp: float, h_dp: float, rad_dp: float, fill, outline=None, lw: float = 1.0):
             x0, y0 = x_dp * R, y_dp * R
             x1, y1 = (x_dp + w_dp) * R, (y_dp + h_dp) * R
             draw.rounded_rectangle((x0, y0, x1, y1), radius=max(1, int(round(rad_dp * R))), fill=fill, outline=outline, width=max(1, int(round(lw * R))))
 
-        # Header subtle hairline (NO square icon box!)
+        # Header subtle hairline
         draw.line((0, int(header_h * R), Wr, int(header_h * R)), fill=C_BORDER_SUB, width=max(1, int(R)))
-        dr_txt(pad, 13.0, APP_NAME, 15.0, "bd", C_TX)
+        dr_txt(pad, 19.0, APP_NAME, 16.0, "bd", C_TX, "lm")
         if APP_VERSION:
-            title_w = self.text_w(self.fnt(15.0 * ss, "bd"), APP_NAME) / R
-            dr_txt(pad + title_w + 8.0, 15.5, APP_VERSION, 11.5, "md", C_TX3)
-        dr_txt(pad, 34.0, self.tr("sub"), 11.5, "rg", C_TX2)
+            title_w = self.text_w(self.fnt(16.0 * ss, "bd", opsz_dp=16.0), APP_NAME) / R
+            dr_txt(pad + title_w + 8.0, 20.0, APP_VERSION, 11.5, "md", C_TX3, "lm")
+        dr_txt(pad, 39.5, self.tr("sub"), 12.0, "rg", C_TX2, "lm")
 
-        # Header segmented RU/EN pill track (thumb + labels live on Canvas for smooth slide)
+        # Header segmented RU/EN pill track
         seg_x, seg_y, seg_w, seg_h = self.W - pad - 186.0, 11.0, 82.0, 34.0
         self._seg_pos = (seg_x, seg_y, seg_w, seg_h)
         dr_box(seg_x, seg_y, seg_w, seg_h, 9.0, C_SUNK + (255,), C_BORDER_CTRL)
@@ -2167,7 +2338,7 @@ class App:
         set_x, set_y, set_w, set_h = self.W - pad - 96.0, 11.0, 96.0, 34.0
         dr_box(set_x, set_y, set_w, set_h, 8.0, C_CTRL + (255,), C_BORDER_CTRL)
         set_label = self.tr("back") if self.page == "set" else self.tr("settings")
-        dr_txt(set_x + set_w * 0.5, set_y + set_h * 0.5, set_label, 12.0, "md", C_TX, "mm")
+        dr_txt(set_x + set_w * 0.5, set_y + set_h * 0.5, set_label, 12.5, "md", C_TX, "mm")
 
         switch_placements: list[tuple[str, float, float]] = []
         radio_placements: list[tuple[int, float, float]] = []
@@ -2188,90 +2359,92 @@ class App:
             if kind == "methods":
                 _, by, bh, m_rects, pbtn_y, pbtn_h, pbox = blk
                 dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
-                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_methods"), 11.0, "sb", C_TX2)
-                self._hint_pos = (pad + cw - 12.0, by + 11.0)
+                dr_txt(pad + 12.0, by + 18.0, self.tr("sec_methods"), 11.5, "sb", C_TX2, "lm")
+                self._hint_pos = (pad + cw - 12.0, by + 18.0)
 
                 for mval, tk_t, tk_d, ry, rw, rh in m_rects:
                     rx = pad + 10.0
                     self._method_ys[mval] = ry
                     dr_box(rx, ry, rw, rh, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                    radio_placements.append((mval, rx + 12.0, ry + 13.0))
-                    dr_txt(rx + 38.0, ry + 7.5, self.tr(tk_t), 12.5, "md", C_TX)
-                    dr_txt(rx + 38.0, ry + 24.5, self.tr(tk_d), 11.0, "rg", C_TX2)
-                    hover_defs.append((f"m_{mval}", "row_44", rx, ry, ry))
+                    radio_placements.append((mval, rx + 12.0, ry + 14.0))
+                    dr_txt(rx + 38.0, ry + 15.0, self.tr(tk_t), 13.5, "md", C_TX, "lm")
+                    dr_txt(rx + 38.0, ry + 32.5, self.tr(tk_d), 12.0, "rg", C_TX2, "lm")
+                    hover_defs.append((f"m_{mval}", "row_46", rx, ry, ry))
 
-                # Disclosure button: Method parameters (summary + chevron on Canvas)
+                # Disclosure button: Method parameters
                 px = pad + 10.0
                 pw = cw - 20.0
                 dr_box(px, pbtn_y, pw, pbtn_h, 8.0, C_SUNK + (255,), C_BORDER_CTRL)
-                dr_txt(px + 12.0, pbtn_y + pbtn_h * 0.5, self.tr("params_title"), 12.0, "md", C_TX2, "lm")
-                ptw = self.text_w(self.fnt(12.0 * ss, "md"), self.tr("params_title")) / R
+                dr_txt(px + 12.0, pbtn_y + pbtn_h * 0.5, self.tr("params_title"), 12.5, "md", C_TX2, "lm")
+                ptw = self.text_w(self.fnt(12.5 * ss, "md", opsz_dp=12.5), self.tr("params_title")) / R
                 self._params_x_sum = px + 12.0 + ptw + 10.0
                 self._params_y_sum = pbtn_y + pbtn_h * 0.5
                 self._chev_center = (px + pw - 18.0, pbtn_y + pbtn_h * 0.5)
-                self._params_bounds = (pbtn_y + pbtn_h + 2.0, pbtn_y + pbtn_h + 2.0 + 98.0)
+                self._params_bounds = (pbtn_y + pbtn_h + 2.0, pbtn_y + pbtn_h + 2.0 + 104.0)
                 hover_defs.append(("params_btn", "row_34", px, pbtn_y, pbtn_y))
 
                 if pbox is not None:
                     r1y, r2y = pbox
-                    dr_box(px, r1y, pw, 44.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                    dr_txt(px + 12.0, r1y + 7.5, self.tr("delay_title"), 12.0, "md", C_TX)
-                    dr_txt(px + 12.0, r1y + 24.0, self.tr("delay_desc"), 11.0, "rg", C_TX2)
+                    dr_box(px, r1y, pw, 46.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                    dr_txt(px + 12.0, r1y + 15.0, self.tr("delay_title"), 13.0, "md", C_TX, "lm")
+                    dr_txt(px + 12.0, r1y + 32.5, self.tr("delay_desc"), 11.5, "rg", C_TX2, "lm")
                     s2_x = px + pw - 12.0 - 94.0
                     s1_x = s2_x - 16.0 - 94.0
-                    dr_txt(s1_x + 102.0, r1y + 22.0, "–", 12.0, "md", C_TX3, "mm")
+                    dr_txt(s1_x + 102.0, r1y + 23.0, "–", 12.5, "md", C_TX3, "mm")
                     for skey, sx, sv in (("min", s1_x, int(self.live("min"))), ("max", s2_x, int(self.live("max")))):
-                        dr_box(sx, r1y + 7.0, 94.0, 30.0, 7.0, C_CTRL + (255,), C_BORDER_CTRL)
-                        dr_txt(sx + 15.0, r1y + 22.0, "−", 13.0, "bd", C_TX, "mm")
-                        dr_txt(sx + 79.0, r1y + 22.0, "+", 13.0, "bd", C_TX, "mm")
-                        stepper_placements.append((skey, sx, r1y + 7.0, skey, sv))
-                        hover_defs.append((f"st_dec_{skey}", "mini_30", sx, r1y + 7.0, r1y + 7.0))
-                        hover_defs.append((f"st_inc_{skey}", "mini_30", sx + 64.0, r1y + 7.0, r1y + 7.0))
+                        dr_box(sx, r1y + 8.0, 94.0, 30.0, 7.0, C_CTRL + (255,), C_BORDER_CTRL)
+                        dr_txt(sx + 15.0, r1y + 23.0, "−", 14.0, "bd", C_TX, "mm")
+                        dr_txt(sx + 79.0, r1y + 23.0, "+", 14.0, "bd", C_TX, "mm")
+                        stepper_placements.append((skey, sx, r1y + 8.0, skey, sv))
+                        hover_defs.append((f"st_dec_{skey}", "mini_30", sx, r1y + 8.0, r1y + 8.0))
+                        hover_defs.append((f"st_inc_{skey}", "mini_30", sx + 64.0, r1y + 8.0, r1y + 8.0))
 
-                    dr_box(px, r2y, pw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                    dr_txt(px + 12.0, r2y + 7.0, self.tr("safe_title"), 12.0, "md", C_TX)
-                    dr_txt(px + 12.0, r2y + 23.0, self.tr("safe_desc"), 11.0, "rg", C_TX2)
-                    switch_placements.append(("safe", px + pw - 52.0, r2y + 10.0))
-                    hover_defs.append(("sw_safe", "row_42", px, r2y, r2y))
+                    dr_box(px, r2y, pw, 44.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                    dr_txt(px + 12.0, r2y + 14.5, self.tr("safe_title"), 13.0, "md", C_TX, "lm")
+                    dr_txt(px + 12.0, r2y + 31.5, self.tr("safe_desc"), 11.5, "rg", C_TX2, "lm")
+                    switch_placements.append(("safe", px + pw - 52.0, r2y + 11.0))
+                    hover_defs.append(("sw_safe", "row_44", px, r2y, r2y))
 
             elif kind == "afk":
                 _, by, bh, rows = blk
                 dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
-                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_afk"), 11.0, "sb", C_TX2)
-                dr_txt(pad + cw - 12.0, by + 11.0, self.tr("afk_safety"), 11.0, "rg", C_TX3, "ra")
+                dr_txt(pad + 12.0, by + 18.0, self.tr("sec_afk"), 11.5, "sb", C_TX2, "lm")
+                dr_txt(pad + cw - 12.0, by + 18.0, self.tr("afk_safety"), 11.5, "rg", C_TX3, "rm")
                 rx = pad + 10.0
                 rw = cw - 20.0
                 for cfg_k, t_k, d_k, ry, rh, sub in rows:
                     dr_box(rx, ry, rw, rh, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                    dr_txt(rx + 12.0, ry + 6.5, self.tr(t_k), 12.0, "md", C_TX)
-                    dr_txt(rx + 12.0, ry + 22.0, self.tr(d_k), 11.0, "rg", C_TX2)
-                    switch_placements.append((cfg_k, rx + rw - 52.0, ry + 9.0))
-                    hover_defs.append((f"sw_{cfg_k}", "row_40", rx, ry, ry))
-                    if cfg_k in ("swing", "walk"):
-                        self._sub_bounds[cfg_k] = (ry + rh, ry + rh + 30.0)
+                    dr_txt(rx + 12.0, ry + 14.0, self.tr(t_k), 13.5, "md", C_TX, "lm")
+                    dr_txt(rx + 12.0, ry + 30.0, self.tr(d_k), 11.5, "rg", C_TX2, "lm")
+                    switch_placements.append((cfg_k, rx + rw - 52.0, ry + 10.0))
+                    hover_defs.append((f"sw_{cfg_k}", "row_42", rx, ry, ry))
                     if sub == "pickaxe":
-                        sy = ry + rh + 4.0
+                        sy = ry + rh + 3.0
+                        self._sub_bounds["swing"] = (ry + rh, sy + 26.0)
+                        self._sub_bars["pickaxe"] = (rx, sy - 1.0, rw, 26.0)
                         draw.line((int((rx + 14.0) * R), int((sy + 2.0) * R), int((rx + 14.0) * R), int((sy + 22.0) * R)), fill=C_BORDER_CTRL, width=max(1, int(round(1.5 * R))))
-                        dr_txt(rx + 26.0, sy + 12.0, self.tr("lmb_mode"), 11.0, "rg", C_TX2, "lm")
+                        dr_txt(rx + 26.0, sy + 12.0, self.tr("lmb_mode"), 11.5, "rg", C_TX2, "lm")
                         is_hold = bool(self.live("mouse"))
-                        w_a, w_b = 128.0, 108.0
+                        w_a, w_b = 132.0, 108.0
                         bx_b = rx + rw - w_b
                         bx_a = bx_b - 8.0 - w_a
                         chip_placements.append(("lmb_swing", bx_a, sy, w_a, 24.0, self.tr("lmb_swings"), not is_hold))
                         chip_placements.append(("lmb_hold", bx_b, sy, w_b, 24.0, self.tr("lmb_hold"), is_hold))
-                        hover_defs.append(("lmb_swing", "chip_128_24", bx_a, sy, sy))
+                        hover_defs.append(("lmb_swing", "chip_132_24", bx_a, sy, sy))
                         hover_defs.append(("lmb_hold", "chip_108_24", bx_b, sy, sy))
                     elif sub == "pace":
-                        sy = ry + rh + 4.0
+                        sy = ry + rh + 3.0
+                        self._sub_bounds["walk"] = (ry + rh, sy + 26.0)
+                        self._sub_bars["pace"] = (rx, sy - 1.0, rw, 26.0)
                         draw.line((int((rx + 14.0) * R), int((sy + 2.0) * R), int((rx + 14.0) * R), int((sy + 22.0) * R)), fill=C_BORDER_CTRL, width=max(1, int(round(1.5 * R))))
-                        dr_txt(rx + 26.0, sy + 12.0, self.tr("pace_label"), 11.0, "rg", C_TX2, "lm")
+                        dr_txt(rx + 26.0, sy + 12.0, self.tr("pace_label"), 11.5, "rg", C_TX2, "lm")
                         is_st = bool(self.live("stand"))
-                        w_a, w_b = 114.0, 104.0
+                        w_a, w_b = 118.0, 104.0
                         bx_b = rx + rw - w_b
                         bx_a = bx_b - 8.0 - w_a
                         chip_placements.append(("pace_norm", bx_a, sy, w_a, 24.0, self.tr("pace_norm"), not is_st))
                         chip_placements.append(("pace_stand", bx_b, sy, w_b, 24.0, self.tr("pace_stand"), is_st))
-                        hover_defs.append(("pace_norm", "chip_114_24", bx_a, sy, sy))
+                        hover_defs.append(("pace_norm", "chip_118_24", bx_a, sy, sy))
                         hover_defs.append(("pace_stand", "chip_104_24", bx_b, sy, sy))
 
             elif kind == "status":
@@ -2282,66 +2455,67 @@ class App:
             elif kind == "perf":
                 _, by, bh = blk
                 dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
-                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_perf"), 11.0, "sb", C_TX2)
-                dr_txt(pad + cw - 12.0, by + 11.0, self.tr("perf_note"), 11.0, "rg", C_TX3, "ra")
-                rx, rw, ry = pad + 10.0, cw - 20.0, by + 31.0
-                dr_box(rx, ry, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                dr_txt(rx + 12.0, ry + 6.5, self.tr("anim_title"), 12.0, "md", C_TX)
-                dr_txt(rx + 12.0, ry + 22.0, self.tr("anim_desc"), 11.0, "rg", C_TX2)
+                dr_txt(pad + 12.0, by + 18.0, self.tr("sec_perf"), 11.5, "sb", C_TX2, "lm")
+                dr_txt(pad + cw - 12.0, by + 18.0, self.tr("perf_note"), 11.5, "rg", C_TX3, "rm")
+                rx, rw, ry = pad + 10.0, cw - 20.0, by + 32.0
+                dr_box(rx, ry, rw, 46.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, ry + 15.0, self.tr("anim_title"), 13.5, "md", C_TX, "lm")
+                dr_txt(rx + 12.0, ry + 32.5, self.tr("anim_desc"), 11.5, "rg", C_TX2, "lm")
                 anim_on = bool(self.live("anim"))
-                c_off_x, c_on_x = rx + rw - 96.0, rx + rw - 96.0 - 8.0 - 122.0
-                chip_placements.append(("anim_off", c_off_x, ry + 8.0, 86.0, 26.0, self.tr("anim_off"), not anim_on))
-                chip_placements.append(("anim_on", c_on_x, ry + 8.0, 122.0, 26.0, self.tr("anim_on"), anim_on))
-                hover_defs.append(("anim_off", "chip_86_26", c_off_x, ry + 8.0, ry + 8.0))
-                hover_defs.append(("anim_on", "chip_122_26", c_on_x, ry + 8.0, ry + 8.0))
+                c_off_x = rx + rw - 98.0
+                c_on_x = c_off_x - 8.0 - 128.0
+                chip_placements.append(("anim_off", c_off_x, ry + 10.0, 88.0, 26.0, self.tr("anim_off"), not anim_on))
+                chip_placements.append(("anim_on", c_on_x, ry + 10.0, 128.0, 26.0, self.tr("anim_on"), anim_on))
+                hover_defs.append(("anim_off", "chip_88_26", c_off_x, ry + 10.0, ry + 10.0))
+                hover_defs.append(("anim_on", "chip_128_26", c_on_x, ry + 10.0, ry + 10.0))
 
             elif kind == "calib":
                 _, by, bh = blk
                 dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
-                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_input"), 11.0, "sb", C_TX2)
+                dr_txt(pad + 12.0, by + 18.0, self.tr("sec_input"), 11.5, "sb", C_TX2, "lm")
                 rx, rw = pad + 10.0, cw - 20.0
 
-                r1y = by + 31.0
-                dr_box(rx, r1y, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                dr_txt(rx + 12.0, r1y + 6.5, self.tr("turn_title"), 12.0, "md", C_TX)
-                dr_txt(rx + 12.0, r1y + 22.0, self.tr("turn_desc"), 11.0, "rg", C_TX2)
+                r1y = by + 32.0
+                dr_box(rx, r1y, rw, 44.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, r1y + 14.5, self.tr("turn_title"), 13.5, "md", C_TX, "lm")
+                dr_txt(rx + 12.0, r1y + 31.5, self.tr("turn_desc"), 11.5, "rg", C_TX2, "lm")
                 sx = rx + rw - 110.0
-                dr_box(sx, r1y + 6.0, 100.0, 30.0, 7.0, C_CTRL + (255,), C_BORDER_CTRL)
-                dr_txt(sx + 16.0, r1y + 21.0, "−", 13.0, "bd", C_TX, "mm")
-                dr_txt(sx + 84.0, r1y + 21.0, "+", 13.0, "bd", C_TX, "mm")
-                stepper_placements.append(("turn_px", sx, r1y + 6.0, "turn_px", int(self.live("turn_px"))))
-                hover_defs.append(("st_dec_turn_px", "mini_30", sx, r1y + 6.0, r1y + 6.0))
-                hover_defs.append(("st_inc_turn_px", "mini_30", sx + 70.0, r1y + 6.0, r1y + 6.0))
+                dr_box(sx, r1y + 7.0, 100.0, 30.0, 7.0, C_CTRL + (255,), C_BORDER_CTRL)
+                dr_txt(sx + 16.0, r1y + 22.0, "−", 14.0, "bd", C_TX, "mm")
+                dr_txt(sx + 84.0, r1y + 22.0, "+", 14.0, "bd", C_TX, "mm")
+                stepper_placements.append(("turn_px", sx, r1y + 7.0, "turn_px", int(self.live("turn_px"))))
+                hover_defs.append(("st_dec_turn_px", "mini_30", sx, r1y + 7.0, r1y + 7.0))
+                hover_defs.append(("st_inc_turn_px", "mini_30", sx + 70.0, r1y + 7.0, r1y + 7.0))
 
-                r2y = r1y + 48.0
-                dr_box(rx, r2y, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                dr_txt(rx + 12.0, r2y + 6.5, self.tr("hk_start"), 12.0, "md", C_TX)
-                dr_txt(rx + 12.0, r2y + 22.0, self.tr("hk_start_desc"), 11.0, "rg", C_TX2)
-                bind_placements.append(("start", rx + rw - 84.0, r2y + 6.0))
-                hover_defs.append(("bind_start", "bind_btn", rx + rw - 84.0, r2y + 6.0, r2y + 6.0))
+                r2y = r1y + 50.0
+                dr_box(rx, r2y, rw, 44.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, r2y + 14.5, self.tr("hk_start"), 13.5, "md", C_TX, "lm")
+                dr_txt(rx + 12.0, r2y + 31.5, self.tr("hk_start_desc"), 11.5, "rg", C_TX2, "lm")
+                bind_placements.append(("start", rx + rw - 84.0, r2y + 7.0))
+                hover_defs.append(("bind_start", "bind_btn", rx + rw - 84.0, r2y + 7.0, r2y + 7.0))
 
-                r3y = r2y + 48.0
-                dr_box(rx, r3y, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                dr_txt(rx + 12.0, r3y + 6.5, self.tr("hk_stop"), 12.0, "md", C_TX)
-                dr_txt(rx + 12.0, r3y + 22.0, self.tr("hk_stop_desc"), 11.0, "rg", C_TX2)
-                bind_placements.append(("stop", rx + rw - 84.0, r3y + 6.0))
-                hover_defs.append(("bind_stop", "bind_btn", rx + rw - 84.0, r3y + 6.0, r3y + 6.0))
+                r3y = r2y + 50.0
+                dr_box(rx, r3y, rw, 44.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, r3y + 14.5, self.tr("hk_stop"), 13.5, "md", C_TX, "lm")
+                dr_txt(rx + 12.0, r3y + 31.5, self.tr("hk_stop_desc"), 11.5, "rg", C_TX2, "lm")
+                bind_placements.append(("stop", rx + rw - 84.0, r3y + 7.0))
+                hover_defs.append(("bind_stop", "bind_btn", rx + rw - 84.0, r3y + 7.0, r3y + 7.0))
 
-                r4y = r3y + 48.0
-                dr_box(rx, r4y, rw, 42.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                dr_txt(rx + 12.0, r4y + 6.5, self.tr("any_title"), 12.0, "md", C_TX)
-                dr_txt(rx + 12.0, r4y + 22.0, self.tr("any_desc"), 11.0, "rg", C_TX2)
-                switch_placements.append(("any_win", rx + rw - 52.0, r4y + 10.0))
-                hover_defs.append(("sw_any_win", "row_42", rx, r4y, r4y))
+                r4y = r3y + 50.0
+                dr_box(rx, r4y, rw, 44.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, r4y + 14.5, self.tr("any_title"), 13.5, "md", C_TX, "lm")
+                dr_txt(rx + 12.0, r4y + 31.5, self.tr("any_desc"), 11.5, "rg", C_TX2, "lm")
+                switch_placements.append(("any_win", rx + rw - 52.0, r4y + 11.0))
+                hover_defs.append(("sw_any_win", "row_44", rx, r4y, r4y))
 
             elif kind == "about":
                 _, by, bh = blk
                 dr_box(pad, by, cw, bh, 13.0, C_CARD + (255,), C_BORDER_SUB)
-                dr_txt(pad + 12.0, by + 11.0, self.tr("sec_about"), 11.0, "sb", C_TX2)
-                rx, rw, ry = pad + 10.0, cw - 20.0, by + 31.0
-                dr_box(rx, ry, rw, 44.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
-                dr_txt(rx + 12.0, ry + 7.0, self.tr("about_title"), 12.0, "md", C_TX)
-                dr_txt(rx + 12.0, ry + 23.0, self.tr("about_desc"), 10.5, "rg", C_TX2)
+                dr_txt(pad + 12.0, by + 18.0, self.tr("sec_about"), 11.5, "sb", C_TX2, "lm")
+                rx, rw, ry = pad + 10.0, cw - 20.0, by + 32.0
+                dr_box(rx, ry, rw, 46.0, 8.0, C_SUNK + (255,), C_BORDER_SUB)
+                dr_txt(rx + 12.0, ry + 15.0, self.tr("about_title"), 13.5, "md", C_TX, "lm")
+                dr_txt(rx + 12.0, ry + 32.5, self.tr("about_desc"), 11.5, "rg", C_TX2, "lm")
 
         # Footer action strip
         draw.rectangle((0, int(footer_y * R), Wr, Hr), fill=C_FOOTER_BG + (255,))
@@ -2350,10 +2524,10 @@ class App:
         act_y = footer_y + 10.0
         if self.undo_snap is not None:
             dr_box(pad, act_y, cw, 34.0, 8.0, C_CARD + (255,), C_BORDER_CTRL)
-            dr_txt(pad + 12.0, act_y + 17.0, self.tr("undo_msg"), 11.5, "rg", C_TX, "lm")
+            dr_txt(pad + 12.0, act_y + 17.0, self.tr("undo_msg"), 12.0, "rg", C_TX, "lm")
             ux, uw = pad + cw - 92.0, 82.0
             dr_box(ux, act_y + 5.0, uw, 24.0, 6.0, C_CTRL + (255,), C_BORDER_CTRL)
-            dr_txt(ux + uw * 0.5, act_y + 17.0, self.tr("undo_btn"), 11.0, "sb", C_TX, "mm")
+            dr_txt(ux + uw * 0.5, act_y + 17.0, self.tr("undo_btn"), 11.5, "sb", C_TX, "mm")
             undo_btn_rect = (ux, act_y + 5.0, uw, 24.0)
             hover_defs.append(("undo", "undo_btn", ux, act_y + 5.0, act_y + 5.0))
             act_y += 42.0
@@ -2364,15 +2538,15 @@ class App:
         hover_defs.append(("cta_start", "cta_start", pad, act_y, act_y))
         hover_defs.append(("cta_stop", "cta_stop", pad + start_w + 12.0, act_y, act_y))
 
-        meta_y = act_y + 46.0
+        meta_y = act_y + 45.0
         rlab = self.tr("btn_reset")
-        rw_px = self.text_w(self.fnt(11.5 * ss, "md"), rlab) / R
-        dr_txt(pad, meta_y + 7.0, rlab, 11.5, "md", C_TX2, "lm")
-        draw.line((int(pad * R), int((meta_y + 15.0) * R), int((pad + rw_px) * R), int((meta_y + 15.0) * R)), fill=C_BORDER_CTRL, width=max(1, int(R)))
+        rw_px = self.text_w(self.fnt(12.0 * ss, "md", opsz_dp=12.0), rlab) / R
+        dr_txt(pad, meta_y + 7.0, rlab, 12.0, "md", C_TX2, "lm")
+        draw.line((int(pad * R), int((meta_y + 16.0) * R), int((pad + rw_px) * R), int((meta_y + 16.0) * R)), fill=C_BORDER_CTRL, width=max(1, int(R)))
         reset_rect = (pad - 4.0, meta_y - 4.0, rw_px + 8.0, 22.0)
 
         adm_txt = self.tr("admin_ok") if is_admin() else self.tr("admin_no")
-        dr_txt(pad + cw, meta_y + 7.0, adm_txt, 11.0, "rg", C_TX3, "rm")
+        dr_txt(pad + cw, meta_y + 7.0, adm_txt, 11.5, "rg", C_TX3, "rm")
 
         base_1x = base.resize((self.Wp, int(round(self.total_h * self.S))), Image.Resampling.LANCZOS)
         if HEADLESS:
@@ -2406,7 +2580,7 @@ class App:
                     return ((grp, "layer_topbot_fg"), grp, "layer_topbot_fg")
             return (("layer_topbot_fg",), "", "layer_topbot_fg")
 
-        # Place sliced or single backdrop images so animations move clipped bands at 60 FPS
+        # Place sliced or single backdrop images so structural transitions glide cleanly
         if active_anim is None:
             self._bg_item = self.cv.create_image(0, 0, anchor="nw", image=self._bg_photo, tags=("layer_topbot_bg",))
         elif active_anim["kind"] == "page":
@@ -2472,7 +2646,7 @@ class App:
                     self.regions.append((f"m_{mval}", pad + 10.0, ry, pad + 10.0 + rw, ry + rh, lambda mv=mval: self.select_method(mv)))
                 self.regions.append(("params_btn", pad + 10.0, pbtn_y, pad + cw - 10.0, pbtn_y + pbtn_h, self.toggle_params))
                 if pbox is not None:
-                    self.regions.append(("sw_safe", pad + 10.0, pbox[1], pad + cw - 10.0, pbox[1] + 42.0, lambda: self.flip("safe")))
+                    self.regions.append(("sw_safe", pad + 10.0, pbox[1], pad + cw - 10.0, pbox[1] + 44.0, lambda: self.flip("safe")))
             elif blk[0] == "afk":
                 for cfg_k, _, _, ry, rh, _ in blk[3]:
                     self.regions.append((f"sw_{cfg_k}", pad + 10.0, ry, pad + cw - 10.0, ry + rh, lambda k=cfg_k: self.flip(k)))
@@ -2480,28 +2654,26 @@ class App:
                 self._status_y = blk[1]
             elif blk[0] == "calib":
                 _, by, _ = blk
-                self.regions.append(("sw_any_win", pad + 10.0, by + 31.0 + 144.0, pad + cw - 10.0, by + 31.0 + 186.0, lambda: self.flip("any_win")))
+                self.regions.append(("sw_any_win", pad + 10.0, by + 32.0 + 150.0, pad + cw - 10.0, by + 32.0 + 194.0, lambda: self.flip("any_win")))
 
-        # Header sliding RU/EN pill thumb & crisp labels (never clipped by body slides)
+        # Header sliding RU/EN pill thumb & 2x LANCZOS labels
         seg_tx0 = seg_x + (3.0 if lang == "ru" else 42.0)
         self._canvas_items["seg_thumb"] = self.cv.create_image(
             int(round(seg_tx0 * self.S)), int(round((seg_y + 3.0) * self.S)),
             anchor="nw", image=self.sprites["seg_thumb"], tags=("layer_hdr_fg",),
         )
-        self._canvas_items["seg_ru_tx"] = self.cv.create_text(
+        self._canvas_items["seg_ru_tx"] = self.cv.create_image(
             int(round((seg_x + 21.5) * self.S)), int(round((seg_y + seg_h * 0.5) * self.S)),
-            text="RU", fill=hexc(C_TX if lang == "ru" else C_TX2),
-            font=("Inter Bold", -max(10, int(round(11.5 * self.S)))), tags=("layer_hdr_fg",),
+            anchor="center", image=self.sprites[f"seg_ru_{'act' if lang == 'ru' else 'dim'}"], tags=("layer_hdr_fg",),
         )
-        self._canvas_items["seg_en_tx"] = self.cv.create_text(
+        self._canvas_items["seg_en_tx"] = self.cv.create_image(
             int(round((seg_x + 60.5) * self.S)), int(round((seg_y + seg_h * 0.5) * self.S)),
-            text="EN", fill=hexc(C_TX if lang == "en" else C_TX2),
-            font=("Inter Bold", -max(10, int(round(11.5 * self.S)))), tags=("layer_hdr_fg",),
+            anchor="center", image=self.sprites[f"seg_en_{'act' if lang == 'en' else 'dim'}"], tags=("layer_hdr_fg",),
         )
 
         # Method card active highlight, hint, params summary & chevron
         if self.page == "main" and self._method_ys:
-            m_y_act = self._method_ys.get(method, self._method_ys.get(1, header_h + 42.0))
+            m_y_act = self._method_ys.get(method, self._method_ys.get(1, header_h + 41.0))
             m_tags = _group_info(m_y_act)[0]
             self._canvas_items["method_act"] = self.cv.create_image(
                 int(round((pad + 10.0) * self.S)), int(round(m_y_act * self.S)),
@@ -2509,17 +2681,12 @@ class App:
             )
             hx_dp, hy_dp = self._hint_pos
             h_tags = _group_info(hy_dp)[0]
-            self._canvas_items["hint_method"] = self.cv.create_text(
-                int(round(hx_dp * self.S)), int(round((hy_dp - 1.5) * self.S)),
-                anchor="ne", text=self.tr("hint_afk") if method == 0 else self.tr("hint_auto"),
-                fill=hexc(C_TX3), font=("Inter", -max(9, int(round(11.0 * self.S)))), tags=h_tags,
+            self._place_dyn_text(
+                "hint_method", self.tr("hint_afk") if method == 0 else self.tr("hint_auto"),
+                hx_dp, hy_dp, 11.5, "rg", C_TX3, anchor="e", tags=h_tags,
             )
             ptags = _group_info(self._params_y_sum)[0]
-            self._canvas_items["params_sum"] = self.cv.create_text(
-                int(round(self._params_x_sum * self.S)), int(round(self._params_y_sum * self.S)),
-                anchor="w", text="", fill=hexc(C_TX3),
-                font=("Inter", -max(9, int(round(11.0 * self.S)))), tags=ptags,
-            )
+            self._place_dyn_text("params_sum", "", self._params_x_sum, self._params_y_sum, 12.0, "rg", C_TX3, anchor="w", tags=ptags)
             cx0, cy0 = self._chev_center
             if self.params_open:
                 cpts = ((cx0 - 4.0) * self.S, (cy0 + 2.0) * self.S, cx0 * self.S, (cy0 - 2.5) * self.S, (cx0 + 4.0) * self.S, (cy0 + 2.0) * self.S)
@@ -2530,7 +2697,7 @@ class App:
                 capstyle="round", joinstyle="round", tags=ptags,
             )
 
-        # Choice chips (live animated Canvas items)
+        # Choice chips (baked 13-step 2x LANCZOS sprites)
         chip_map = {
             "lmb_swing": ("mouse", False),
             "lmb_hold": ("mouse", True),
@@ -2539,21 +2706,31 @@ class App:
             "anim_on": ("anim", True),
             "anim_off": ("anim", False),
         }
-        for cid, cx, cy, ch_w, ch_h, label, pressed in chip_placements:
+        self._chip_placements = list(chip_placements)
+        for cid, cx, cy, ch_w, ch_h, _, pressed in chip_placements:
             cfg_k, active_val = chip_map[cid]
             tags = _group_info(cy)[0]
-            step = 4 if pressed else 0
+            step = 12 if pressed else 0
             bg_id = self.cv.create_image(
                 int(round(cx * self.S)), int(round(cy * self.S)),
-                anchor="nw", image=self.sprites[f"chip_{int(ch_w)}_{int(ch_h)}_{step}"], tags=tags,
+                anchor="nw", image=self.sprites[f"chip_{cid}_{lang}_{step}"], tags=tags,
             )
-            tx_id = self.cv.create_text(
-                int(round((cx + ch_w * 0.5) * self.S)), int(round((cy + ch_h * 0.5) * self.S)),
-                text=label, fill=hexc(C_TX if pressed else C_TX2),
-                font=("Inter Medium", -max(9, int(round(11.0 * self.S)))), tags=tags,
-            )
-            self._chip_items[cid] = (bg_id, tx_id, int(ch_w), int(ch_h), label, f"{cfg_k}:{int(active_val)}")
+            self._chip_items[cid] = (bg_id, int(ch_w), int(ch_h), f"chip_{cid}_{lang}", f"{cfg_k}:{int(active_val)}")
             self.regions.append((cid, cx, cy, cx + ch_w, cy + ch_h, lambda ck=cfg_k, av=active_val: self.set_bool(ck, av)))
+
+        # Inline sub-bar dimmed scrims (above chips when swing/walk switch is off)
+        for sub_k, (sbx, sby, _, _) in self._sub_bars.items():
+            parent_on = bool(self.live("swing" if sub_k == "pickaxe" else "walk"))
+            sc_step = 0 if parent_on else 8
+            sc_tags = _group_info(sby)[0]
+            sid = self.cv.create_image(
+                int(round(sbx * self.S)), int(round(sby * self.S)),
+                anchor="nw",
+                image=self.sprites[f"sub_scrim_{max(1, sc_step)}"],
+                state="hidden" if sc_step <= 0 else "normal",
+                tags=sc_tags,
+            )
+            self._sub_scrims[sub_k] = (sid, float(sc_step))
 
         # Dynamic canvas sprite overlays (radios, switches, steppers, binds, status, CTA buttons)
         for mval, rx, ry in radio_placements:
@@ -2567,7 +2744,7 @@ class App:
             on = bool(self.live(skey))
             target_v = 1.0 if on else 0.0
             start_v = sw_from.get(skey, target_v) if (active_anim and skey in sw_from) else target_v
-            s_idx = int(round(clamp(start_v, 0.0, 1.0) * 8.0))
+            s_idx = int(round(clamp(start_v, 0.0, 1.0) * 16.0))
             tx_off = sx + 3.0
             tx_on = sx + 21.0
             tx = tx_off + (tx_on - tx_off) * start_v
@@ -2580,7 +2757,7 @@ class App:
                     "kind": "switch",
                     "skey": skey,
                     "t0": time.monotonic(),
-                    "dur": 0.18,
+                    "dur": 0.21,
                     "v0": start_v,
                     "v1": target_v,
                     "cur_t": start_v,
@@ -2592,13 +2769,9 @@ class App:
             inc_cb = (lambda s=100: self.bump_turn(s)) if skey == "turn_px" else (lambda k=skey: self.bump_delay(k, 1))
             self.regions.append((f"st_dec_{skey}", sx, sy, sx + 30.0, sy + 30.0, dec_cb))
             self.regions.append((f"st_inc_{skey}", sx + w_st - 30.0, sy, sx + w_st, sy + 30.0, inc_cb))
-            self._canvas_items[f"val_{skey}"] = self.cv.create_text(
-                int(round((sx + w_st * 0.5) * self.S)),
-                int(round((sy + 15.0) * self.S)),
-                text=str(sval),
-                fill=hexc(C_TX),
-                font=("Consolas", -max(10, int(round(12.5 * self.S))), "bold"),
-                tags=_group_info(sy)[0],
+            self._place_dyn_text(
+                f"val_{skey}", str(sval), sx + w_st * 0.5, sy + 15.0,
+                13.5, "bd", C_TX, anchor="center", tags=_group_info(sy)[0],
             )
 
         for which, bx, by in bind_placements:
@@ -2608,40 +2781,27 @@ class App:
                 int(round(bx * self.S)), int(round(by * self.S)),
                 anchor="nw", image=self.sprites["bind_idle"], tags=b_tags,
             )
-            self._canvas_items[f"bind_tx_{which}"] = self.cv.create_text(
-                int(round((bx + 37.0) * self.S)), int(round((by + 15.0) * self.S)),
-                text="", fill=hexc(C_TX),
-                font=("Consolas", -max(10, int(round(12.0 * self.S))), "bold"), tags=b_tags,
+            self._place_dyn_text(
+                f"bind_tx_{which}", "", bx + 37.0, by + 15.0,
+                12.5, "bd", C_TX, anchor="center", tags=b_tags,
             )
 
         if self.page == "main":
             sy = self._status_y
             s_tags = _group_info(sy)[0]
             self._canvas_items["st_pill"] = self.cv.create_image(
-                int(round((pad + 12.0) * self.S)), int(round((sy + 8.0) * self.S)),
+                int(round((pad + 12.0) * self.S)), int(round((sy + 7.5) * self.S)),
                 anchor="nw", image=self.sprites[f"pill_{lang}_ready"], tags=s_tags,
             )
             self._canvas_items["st_pulse"] = self.cv.create_image(
                 int(round((pad + 24.0) * self.S)), int(round((sy + 18.5) * self.S)),
                 anchor="center", state="hidden", tags=s_tags,
             )
-            self._canvas_items["st_detail"] = self.cv.create_text(
-                int(round((pad + cw - 12.0) * self.S)), int(round((sy + 18.5) * self.S)),
-                anchor="e", text="", fill=hexc(C_TX2),
-                font=("Inter", -max(10, int(round(11.5 * self.S)))), tags=s_tags,
-            )
-            self._canvas_items["log_0"] = self.cv.create_text(
-                int(round((pad + 12.0) * self.S)), int(round((sy + 48.0) * self.S)),
-                anchor="w", text="", fill=hexc(C_TX2),
-                font=("Consolas", -max(9, int(round(11.0 * self.S)))), tags=s_tags,
-            )
-            self._canvas_items["log_1"] = self.cv.create_text(
-                int(round((pad + 12.0) * self.S)), int(round((sy + 61.5) * self.S)),
-                anchor="w", text="", fill=hexc(C_TX3),
-                font=("Consolas", -max(9, int(round(11.0 * self.S)))), tags=s_tags,
-            )
+            self._place_dyn_text("st_detail", "", pad + cw - 12.0, sy + 18.5, 12.0, "rg", C_TX2, anchor="e", tags=s_tags)
+            self._place_dyn_text("log_0", "", pad + 12.0, sy + 47.0, 11.5, "rg", C_TX2, anchor="w", tags=s_tags)
+            self._place_dyn_text("log_1", "", pad + 12.0, sy + 61.5, 11.5, "rg", C_TX3, anchor="w", tags=s_tags)
 
-        # Primary Start / Stop CTA items (crisp rounded sprites, updated without rebuild)
+        # Primary Start / Stop CTA items (crisp rounded sprites + 2x LANCZOS text)
         sx0, sy0, sw0, sh0, px0, py0, pw0, ph0 = main_action_rects
         self._footer_btn_rects = main_action_rects
         f_tags = _group_info(sy0)[0]
@@ -2649,18 +2809,12 @@ class App:
             int(round(sx0 * self.S)), int(round(sy0 * self.S)),
             anchor="nw", image=self.sprites["cta_start_idle"], tags=f_tags,
         )
-        self._canvas_items["cta_start_tx"] = self.cv.create_text(
-            int(round((sx0 + sw0 * 0.5) * self.S)), int(round((sy0 + sh0 * 0.5) * self.S)),
-            text="", font=("Inter SemiBold", -max(11, int(round(13.0 * self.S)))), tags=f_tags,
-        )
+        self._place_dyn_text("cta_start_tx", "", sx0 + sw0 * 0.5, sy0 + sh0 * 0.5, 13.5, "sb", C_CTA_FG, anchor="center", tags=f_tags)
         self._canvas_items["cta_stop_bg"] = self.cv.create_image(
             int(round(px0 * self.S)), int(round(py0 * self.S)),
             anchor="nw", image=self.sprites["cta_stop_idle"], tags=f_tags,
         )
-        self._canvas_items["cta_stop_tx"] = self.cv.create_text(
-            int(round((px0 + pw0 * 0.5) * self.S)), int(round((py0 + ph0 * 0.5) * self.S)),
-            text="", font=("Inter Medium", -max(11, int(round(13.0 * self.S)))), tags=f_tags,
-        )
+        self._place_dyn_text("cta_stop_tx", "", px0 + pw0 * 0.5, py0 + ph0 * 0.5, 13.5, "md", C_TX, anchor="center", tags=f_tags)
         self.regions.append(("cta_start", sx0, sy0, sx0 + sw0, sy0 + sh0, self.start))
         self.regions.append(("cta_stop", px0, py0, px0 + pw0, py0 + ph0, self.stop))
 
@@ -2668,40 +2822,6 @@ class App:
         for ltag in ("layer_mid_bg", "layer_mid_fg", "layer_topbot_bg", "layer_topbot_fg", "layer_hdr_bg", "layer_hdr_fg"):
             if self.cv.find_withtag(ltag):
                 self.cv.tag_raise(ltag)
-
-        # Kick off structural transition animations if requested
-        if active_anim is not None:
-            ak = active_anim["kind"]
-            now_t = time.monotonic()
-            if ak == "page":
-                dx0 = float(active_anim.get("dir", 1.0)) * 34.0
-                self._start_group_move("ui_body", dx0, 0.0, 0.19, now_t)
-                dy_f = float(active_anim.get("old_footer_y", footer_y)) - footer_y
-                if abs(dy_f) > 1.0:
-                    self._start_group_move("ui_footer", 0.0, dy_f, 0.19, now_t)
-            elif ak == "lang":
-                prev_lng = active_anim.get("prev_lang", lang)
-                if prev_lng != lang:
-                    px_start = seg_x + (3.0 if prev_lng == "ru" else 42.0)
-                    self.cv.coords(self._canvas_items["seg_thumb"], int(round(px_start * self.S)), int(round((seg_y + 3.0) * self.S)))
-                    self._queue_anim("item_x:seg_thumb", {
-                        "kind": "item_x",
-                        "item": self._canvas_items["seg_thumb"],
-                        "t0": now_t,
-                        "dur": 0.18,
-                        "x0": px_start,
-                        "x1": seg_tx0,
-                    })
-                    self._start_group_move("ui_body", 0.0, -8.0, 0.16, now_t)
-            elif ak == "expand":
-                delta = active_anim["split_y1"] - active_anim["split_y0"]
-                self._start_group_move("ui_bot", 0.0, -delta, 0.18, now_t)
-                self._start_group_move("ui_mid", 0.0, -delta * 0.45, 0.18, now_t)
-            elif ak == "collapse":
-                delta = float(active_anim["delta_h"])
-                self._start_group_move("ui_bot", 0.0, delta, 0.18, now_t)
-                if self.cv.find_withtag("ui_mid"):
-                    self._start_group_move("ui_mid", 0.0, -delta * 0.35, 0.18, now_t, delete_on_done=True)
 
         self._headless_meta = {
             "base": base_1x.copy(),
@@ -2722,59 +2842,148 @@ class App:
             "page": self.page,
         }
 
-        # Configure scroll region & set window geometry (defer shrink until collapse finishes)
-        self.cv.configure(
-            width=self.Wp,
-            height=int(round(self.view_h * self.S)),
-            scrollregion=(0, 0, self.Wp, int(round(self.total_h * self.S))),
-        )
+        self.refresh_dynamic_items()
+
+        # Kick off smooth structural transitions (now that _dyn_pil holds fresh text sprites)
+        wh = int(round(self.view_h * self.S))
+        prev_wh = int(round(prev_view_h * self.S))
+        if active_anim is not None:
+            ak = active_anim["kind"]
+            now_t = time.monotonic()
+            if ak == "page":
+                dx0 = float(active_anim.get("dir", 1.0)) * 22.0
+                self._start_group_move("ui_body", dx0, 0.0, 0.21, now_t)
+                dy_f = float(active_anim.get("old_footer_y", footer_y)) - footer_y
+                if abs(dy_f) > 1.0:
+                    self._start_group_move("ui_footer", 0.0, dy_f, 0.21, now_t)
+                old_comp = active_anim.get("old_comp")
+                if old_comp is not None:
+                    hy = max(1, int(round(header_h * self.S)))
+                    old_fy_px = min(old_comp.height, max(hy + 1, int(round(active_anim.get("old_footer_y", footer_y) * self.S))))
+                    old_b = old_comp.crop((0, hy, self.Wp, old_fy_px)).convert("RGBA")
+                    alpha_ch = old_b.getchannel("A")
+                    frames: list[ImageTk.PhotoImage] = []
+                    for k in range(7):
+                        t = k / 6.0
+                        a_scale = 0.92 * ((1.0 - t) ** 1.4)
+                        fr = old_b.copy()
+                        fr.putalpha(alpha_ch.point(lambda p, s=a_scale: int(p * s)))
+                        frames.append(ImageTk.PhotoImage(fr, master=self.root))
+                    self._trans_photos.extend(frames)
+                    tid = self.cv.create_image(0, hy, anchor="nw", image=frames[0], tags=("ui_trans",))
+                    for ltag in ("ui_footer", "layer_hdr_bg", "layer_hdr_fg"):
+                        if self.cv.find_withtag(ltag):
+                            self.cv.tag_raise(ltag)
+                    self._queue_anim("fade:page", {
+                        "kind": "fade_frames",
+                        "item": tid,
+                        "frames": frames,
+                        "last_idx": 0,
+                        "t0": now_t,
+                        "dur": 0.20,
+                        "x0": 0.0,
+                        "x1": -dx0 * 0.7,
+                        "y0": float(hy) / self.S,
+                    })
+            elif ak == "lang":
+                prev_lng = active_anim.get("prev_lang", lang)
+                if prev_lng != lang:
+                    px_start = seg_x + (3.0 if prev_lng == "ru" else 42.0)
+                    self.cv.coords(self._canvas_items["seg_thumb"], int(round(px_start * self.S)), int(round((seg_y + 3.0) * self.S)))
+                    self._queue_anim("item_x:seg_thumb", {
+                        "kind": "item_x",
+                        "item": self._canvas_items["seg_thumb"],
+                        "t0": now_t,
+                        "dur": 0.19,
+                        "x0": px_start,
+                        "x1": seg_tx0,
+                    })
+                    old_comp = active_anim.get("old_comp")
+                    new_comp = self.render_headless_preview()
+                    if old_comp is not None and new_comp is not None:
+                        hy = max(1, int(round(header_h * self.S)))
+                        mh = min(old_comp.height, new_comp.height)
+                        old_b = old_comp.crop((0, hy, self.Wp, mh)).convert("RGBA")
+                        new_b = new_comp.crop((0, hy, self.Wp, mh)).convert("RGBA")
+                        frames = [
+                            ImageTk.PhotoImage(Image.blend(old_b, new_b, (k + 1) / 9.0), master=self.root)
+                            for k in range(8)
+                        ]
+                        self._trans_photos.extend(frames)
+                        tid = self.cv.create_image(0, hy, anchor="nw", image=frames[0], tags=("ui_trans",))
+                        for ltag in ("layer_hdr_bg", "layer_hdr_fg"):
+                            if self.cv.find_withtag(ltag):
+                                self.cv.tag_raise(ltag)
+                        self._queue_anim("fade:lang", {
+                            "kind": "fade_frames",
+                            "item": tid,
+                            "frames": frames,
+                            "last_idx": 0,
+                            "t0": now_t,
+                            "dur": 0.18,
+                            "x0": 0.0,
+                            "x1": 0.0,
+                            "y0": float(hy) / self.S,
+                        })
+            elif ak == "expand":
+                delta = active_anim["split_y1"] - active_anim["split_y0"]
+                self._start_group_move("ui_bot", 0.0, -delta, 0.20, now_t)
+                self._start_group_move("ui_mid", 0.0, -delta * 0.45, 0.20, now_t)
+            elif ak == "collapse":
+                delta = float(active_anim["delta_h"])
+                self._start_group_move("ui_bot", 0.0, delta, 0.20, now_t)
+                if self.cv.find_withtag("ui_mid"):
+                    self._start_group_move("ui_mid", 0.0, -delta * 0.35, 0.20, now_t, delete_on_done=True)
+
+        # Configure scroll region & smooth window height sync
         self.scroll_y = clamp(self.scroll_y, 0.0, max(0.0, self.total_h - self.view_h))
         if self.total_h > 0:
             self.cv.yview_moveto(self.scroll_y / self.total_h)
-        if not HEADLESS:
-            wh = int(round(self.view_h * self.S))
-            prev_wh = int(round(prev_view_h * self.S))
-            has_slide = any(k.startswith("grp:") for k in self.anim_jobs)
-            if active_anim is not None and wh < prev_wh and has_slide:
+        if active_anim is not None and active_anim["kind"] in ("expand", "collapse", "page") and prev_wh != wh:
+            self.cv.configure(
+                width=self.Wp,
+                height=prev_wh if not HEADLESS else wh,
+                scrollregion=(0, 0, self.Wp, int(round(self.total_h * self.S))),
+            )
+            if not HEADLESS:
+                self._set_root_wh(self.Wp, prev_wh)
+                self._geo_anim = (prev_wh, wh)
                 self._pending_geo_wh = (self.Wp, wh)
-            else:
-                cur_geo = self.root.geometry()
-                parts = cur_geo.split("+")
-                if len(parts) == 3:
-                    self.root.geometry(f"{self.Wp}x{wh}+{parts[1]}+{parts[2]}")
-                else:
-                    self.root.geometry(f"{self.Wp}x{wh}")
-
-        self.refresh_dynamic_items()
+        else:
+            self.cv.configure(
+                width=self.Wp,
+                height=wh,
+                scrollregion=(0, 0, self.Wp, int(round(self.total_h * self.S))),
+            )
+            self._set_root_wh(self.Wp, wh)
 
     def refresh_dynamic_items(self) -> None:
-        """Update dynamic labels/status/buttons/steppers instantaneously (no PIL rebuild)."""
+        """Update dynamic 2x LANCZOS labels/status/buttons/steppers instantaneously."""
         lang = self.live("lang")
         method = int(self.live("method"))
         for skey in ("min", "max", "turn_px"):
-            iid = self._canvas_items.get(f"val_{skey}")
-            if iid:
-                self.cv.itemconfigure(iid, text=str(self.live(skey)))
+            if f"val_{skey}" in self._canvas_items:
+                self._set_dyn_text(f"val_{skey}", str(self.live(skey)), 13.5, "bd", C_TX)
 
         if self.page == "main":
             if "hint_method" in self._canvas_items:
-                self.cv.itemconfigure(
-                    self._canvas_items["hint_method"],
-                    text=self.tr("hint_afk") if method == 0 else self.tr("hint_auto"),
+                self._set_dyn_text(
+                    "hint_method",
+                    self.tr("hint_afk") if method == 0 else self.tr("hint_auto"),
+                    11.5, "rg", C_TX3,
                 )
             if "params_sum" in self._canvas_items:
                 fb_txt = self.tr("fb_on") if self.live("safe") else self.tr("fb_off")
                 summ = f"{self.live('min')}–{self.live('max')} {self.tr('min_word')} · {fb_txt}"
-                self.cv.itemconfigure(self._canvas_items["params_sum"], text=summ)
+                self._set_dyn_text("params_sum", summ, 12.0, "rg", C_TX3)
 
         for which in ("start", "stop"):
             bg_id = self._canvas_items.get(f"bind_bg_{which}")
-            tx_id = self._canvas_items.get(f"bind_tx_{which}")
-            if bg_id and tx_id:
+            if bg_id and f"bind_tx_{which}" in self._canvas_items:
                 listening = (self.capturing == which)
                 key_lbl = self.tr("hk_press") if listening else str(self.live(f"{which}_key")).upper()
                 self.cv.itemconfigure(bg_id, image=self.sprites["bind_cap" if listening else "bind_idle"])
-                self.cv.itemconfigure(tx_id, text=key_lbl, fill=hexc(C_CTA_FG if listening else C_TX))
+                self._set_dyn_text(f"bind_tx_{which}", key_lbl, 12.5, "bd", C_CTA_FG if listening else C_TX)
 
         if self.page == "main" and "st_pill" in self._canvas_items:
             st = self.state if self.state in ("ready", "running", "starting", "stopping") else "ready"
@@ -2783,13 +2992,13 @@ class App:
             det = self.ref(self.detail_ref)
             if isinstance(self.detail_ref, dict) and self.detail_ref.get("key") == "dt_idle":
                 det = f"{det} {str(self.live('start_key')).upper()}"
-            self.cv.itemconfigure(self._canvas_items["st_detail"], text=det)
+            self._set_dyn_text("st_detail", det, 12.0, "rg", C_TX2)
 
             logs = list(self.log)
             l0 = f"{logs[-1][0]}  {logs[-1][1]}" if len(logs) >= 1 else ""
             l1 = f"{logs[-2][0]}  {logs[-2][1]}" if len(logs) >= 2 else ""
-            self.cv.itemconfigure(self._canvas_items["log_0"], text=l0)
-            self.cv.itemconfigure(self._canvas_items["log_1"], text=l1)
+            self._set_dyn_text("log_0", l0, 11.5, "rg", C_TX2)
+            self._set_dyn_text("log_1", l1, 11.5, "rg", C_TX3)
             self._sync_pulse()
 
         if "cta_start_bg" in self._canvas_items:
@@ -2797,14 +3006,14 @@ class App:
             tk_stop = str(self.live("stop_key")).upper()
             if self.running:
                 self.cv.itemconfigure(self._canvas_items["cta_start_bg"], image=self.sprites["cta_start_run"])
-                self.cv.itemconfigure(self._canvas_items["cta_start_tx"], text=f"{self.tr('btn_running')}  [{sk}]", fill="#121419")
+                self._set_dyn_text("cta_start_tx", f"{self.tr('btn_running')}  [{sk}]", 13.5, "sb", (18, 20, 25))
                 self.cv.itemconfigure(self._canvas_items["cta_stop_bg"], image=self.sprites["cta_stop_run"])
-                self.cv.itemconfigure(self._canvas_items["cta_stop_tx"], text=f"{self.tr('btn_stop')}  [{tk_stop}]", fill=hexc(C_TX))
+                self._set_dyn_text("cta_stop_tx", f"{self.tr('btn_stop')}  [{tk_stop}]", 13.5, "md", C_TX)
             else:
                 self.cv.itemconfigure(self._canvas_items["cta_start_bg"], image=self.sprites["cta_start_idle"])
-                self.cv.itemconfigure(self._canvas_items["cta_start_tx"], text=f"{self.tr('btn_start')}  [{sk}]", fill=hexc(C_CTA_FG))
+                self._set_dyn_text("cta_start_tx", f"{self.tr('btn_start')}  [{sk}]", 13.5, "sb", C_CTA_FG)
                 self.cv.itemconfigure(self._canvas_items["cta_stop_bg"], image=self.sprites["cta_stop_idle"])
-                self.cv.itemconfigure(self._canvas_items["cta_stop_tx"], text=f"{self.tr('btn_stop')}  [{tk_stop}]", fill="#666C7A")
+                self._set_dyn_text("cta_stop_tx", f"{self.tr('btn_stop')}  [{tk_stop}]", 13.5, "md", (126, 134, 150))
 
         if HEADLESS:
             self.last_headless_img = self.render_headless_preview()
@@ -2825,7 +3034,7 @@ class App:
         return False
 
     def render_headless_preview(self) -> Image.Image | None:
-        """Composite complete UI (sprites + dynamic text/status/CTAs) into one clean PNG Image."""
+        """Composite complete UI using exact 2x LANCZOS sprites matching Canvas pixels."""
         meta = self._headless_meta
         if not meta or "base" not in meta:
             return self.last_headless_img
@@ -2835,26 +3044,47 @@ class App:
         lang = self.live("lang")
         method = int(self.live("method"))
 
-        def paste_sp(name: str, x_dp: float, y_dp: float) -> None:
+        def paste_sp(name: str, x_dp: float, y_dp: float, anchor: str = "nw") -> None:
             sp = self._pil_sprites.get(name)
-            if sp is not None:
-                out.alpha_composite(sp, (int(round(x_dp * S)), int(round(y_dp * S))))
+            if sp is None:
+                return
+            if anchor == "center":
+                ox = int(round(x_dp * S - sp.width * 0.5))
+                oy = int(round(y_dp * S - sp.height * 0.5))
+            else:
+                ox = int(round(x_dp * S))
+                oy = int(round(y_dp * S))
+            out.alpha_composite(sp, (max(0, ox), max(0, oy)))
+
+        def paste_txt(key: str, text: str, x_dp: float, y_dp: float, size_dp: float, wt: str, col_rgb: tuple[int, int, int], anchor: str = "w") -> None:
+            im_1x, _ = self._text_sprite(text, size_dp, wt, col_rgb)
+            if anchor == "w":
+                ox = int(round((x_dp - 2.5) * S))
+                oy = int(round(y_dp * S - im_1x.height * 0.5))
+            elif anchor == "e":
+                ox = int(round((x_dp + 2.5) * S - im_1x.width))
+                oy = int(round(y_dp * S - im_1x.height * 0.5))
+            else:
+                ox = int(round(x_dp * S - im_1x.width * 0.5))
+                oy = int(round(y_dp * S - im_1x.height * 0.5))
+            if ox >= 0 and oy >= 0:
+                out.alpha_composite(im_1x, (ox, oy))
 
         seg = meta.get("seg")
         if seg:
             seg_x, seg_y, _, seg_h = seg
             paste_sp("seg_thumb", seg_x + (3.0 if lang == "ru" else 42.0), seg_y + 3.0)
-            d.text(((seg_x + 21.5) * S, (seg_y + seg_h * 0.5) * S), "RU", font=self.fnt(11.5, "bd"), fill=(C_TX if lang == "ru" else C_TX2) + (255,), anchor="mm")
-            d.text(((seg_x + 60.5) * S, (seg_y + seg_h * 0.5) * S), "EN", font=self.fnt(11.5, "bd"), fill=(C_TX if lang == "en" else C_TX2) + (255,), anchor="mm")
+            paste_sp(f"seg_ru_{'act' if lang == 'ru' else 'dim'}", seg_x + 21.5, seg_y + seg_h * 0.5, anchor="center")
+            paste_sp(f"seg_en_{'act' if lang == 'en' else 'dim'}", seg_x + 60.5, seg_y + seg_h * 0.5, anchor="center")
 
         m_ys = meta.get("method_ys", {})
         if meta.get("page") == "main" and method in m_ys:
             paste_sp("method_act_bg", 26.0, m_ys[method])
             hx, hy = meta.get("hint_pos", (0.0, 0.0))
-            d.text((hx * S, hy * S), self.tr("hint_afk") if method == 0 else self.tr("hint_auto"), font=self.fnt(11.0, "rg"), fill=C_TX3 + (255,), anchor="ra")
+            paste_txt("hint_method", self.tr("hint_afk") if method == 0 else self.tr("hint_auto"), hx, hy, 11.5, "rg", C_TX3, anchor="e")
             px_s, py_s = meta.get("params_pos", (0.0, 0.0))
             fb_txt = self.tr("fb_on") if self.live("safe") else self.tr("fb_off")
-            d.text((px_s * S, py_s * S), f"{self.live('min')}–{self.live('max')} {self.tr('min_word')} · {fb_txt}", font=self.fnt(11.0, "rg"), fill=C_TX3 + (255,), anchor="lm")
+            paste_txt("params_sum", f"{self.live('min')}–{self.live('max')} {self.tr('min_word')} · {fb_txt}", px_s, py_s, 12.0, "rg", C_TX3, anchor="w")
             cx0, cy0 = meta.get("chev_center", (0.0, 0.0))
             if meta.get("params_open"):
                 pts = (((cx0 - 4) * S, (cy0 + 2) * S), (cx0 * S, (cy0 - 2.5) * S), ((cx0 + 4) * S, (cy0 + 2) * S))
@@ -2862,10 +3092,15 @@ class App:
                 pts = (((cx0 - 4) * S, (cy0 - 2) * S), (cx0 * S, (cy0 + 2.5) * S), ((cx0 + 4) * S, (cy0 - 2) * S))
             d.line(pts, fill=C_TX2 + (255,), width=max(1, int(round(1.6 * S))), joint="curve")
 
-        for cid, cx, cy, ch_w, ch_h, label, _ in meta.get("chips", ()):
+        for cid, cx, cy, _cw, _ch, _, _ in meta.get("chips", ()):
             pressed = self._chip_active_state(cid)
-            paste_sp(f"chip_{int(ch_w)}_{int(ch_h)}_{4 if pressed else 0}", cx, cy)
-            d.text(((cx + ch_w * 0.5) * S, (cy + ch_h * 0.5) * S), label, font=self.fnt(11.0, "md"), fill=(C_TX if pressed else C_TX2) + (255,), anchor="mm")
+            paste_sp(f"chip_{cid}_{lang}_{12 if pressed else 0}", cx, cy)
+
+        if meta.get("page") == "main":
+            for sub_k, (sbx, sby, _, _) in self._sub_bars.items():
+                parent_on = bool(self.live("swing" if sub_k == "pickaxe" else "walk"))
+                if not parent_on:
+                    paste_sp("sub_scrim_8", sbx, sby)
 
         for mval, rx, ry in meta["radios"]:
             paste_sp("rad_on" if method == mval else "rad_off", rx, ry)
@@ -2877,32 +3112,31 @@ class App:
 
         for skey, sx, sy, _, _ in meta["steppers"]:
             w_st = 100.0 if skey == "turn_px" else 94.0
-            fn = self.fnt(12.5, "bd")
-            d.text(((sx + w_st * 0.5) * S, (sy + 15.0) * S), str(self.live(skey)), font=fn, fill=C_TX + (255,), anchor="mm")
+            paste_txt(f"val_{skey}", str(self.live(skey)), sx + w_st * 0.5, sy + 15.0, 13.5, "bd", C_TX, anchor="center")
 
         for which, bx, by in meta["binds"]:
             listening = (self.capturing == which)
             paste_sp("bind_cap" if listening else "bind_idle", bx, by)
             key_lbl = self.tr("hk_press") if listening else str(self.live(f"{which}_key")).upper()
-            d.text(((bx + 37.0) * S, (by + 15.0) * S), key_lbl, font=self.fnt(12.0, "bd"), fill=(C_CTA_FG if listening else C_TX) + (255,), anchor="mm")
+            paste_txt(f"bind_tx_{which}", key_lbl, bx + 37.0, by + 15.0, 12.5, "bd", C_CTA_FG if listening else C_TX, anchor="center")
 
         if meta["page"] == "main":
             pad = 16.0
             cw = self.W - pad * 2
             sy = meta["status_y"]
             st = self.state if self.state in ("ready", "running", "starting", "stopping") else "ready"
-            paste_sp(f"pill_{lang}_{st}", pad + 12.0, sy + 8.0)
+            paste_sp(f"pill_{lang}_{st}", pad + 12.0, sy + 7.5)
 
             det = self.ref(self.detail_ref)
             if isinstance(self.detail_ref, dict) and self.detail_ref.get("key") == "dt_idle":
                 det = f"{det} {str(self.live('start_key')).upper()}"
-            d.text(((pad + cw - 12.0) * S, (sy + 18.5) * S), det, font=self.fnt(11.5, "rg"), fill=C_TX2 + (255,), anchor="rm")
+            paste_txt("st_detail", det, pad + cw - 12.0, sy + 18.5, 12.0, "rg", C_TX2, anchor="e")
 
             logs = list(self.log)
             if len(logs) >= 1:
-                d.text(((pad + 12.0) * S, (sy + 48.0) * S), f"{logs[-1][0]}  {logs[-1][1]}", font=self.fnt(11.0, "rg"), fill=C_TX2 + (255,), anchor="lm")
+                paste_txt("log_0", f"{logs[-1][0]}  {logs[-1][1]}", pad + 12.0, sy + 47.0, 11.5, "rg", C_TX2, anchor="w")
             if len(logs) >= 2:
-                d.text(((pad + 12.0) * S, (sy + 61.5) * S), f"{logs[-2][0]}  {logs[-2][1]}", font=self.fnt(11.0, "rg"), fill=C_TX3 + (255,), anchor="lm")
+                paste_txt("log_1", f"{logs[-2][0]}  {logs[-2][1]}", pad + 12.0, sy + 61.5, 11.5, "rg", C_TX3, anchor="w")
 
         sx0, sy0, sw0, sh0, px0, py0, pw0, ph0 = meta["cta"]
         sk = str(self.live("start_key")).upper()
@@ -2910,27 +3144,29 @@ class App:
         if self.running:
             paste_sp("cta_start_run", sx0, sy0)
             paste_sp("cta_stop_run", px0, py0)
-            d.text(((sx0 + sw0 * 0.5) * S, (sy0 + sh0 * 0.5) * S), f"{self.tr('btn_running')}  [{sk}]", font=self.fnt(13.0, "sb"), fill=(18, 20, 25, 255), anchor="mm")
-            d.text(((px0 + pw0 * 0.5) * S, (py0 + ph0 * 0.5) * S), f"{self.tr('btn_stop')}  [{tk_stop}]", font=self.fnt(13.0, "md"), fill=C_TX + (255,), anchor="mm")
+            paste_txt("cta_start_tx", f"{self.tr('btn_running')}  [{sk}]", sx0 + sw0 * 0.5, sy0 + sh0 * 0.5, 13.5, "sb", (18, 20, 25), anchor="center")
+            paste_txt("cta_stop_tx", f"{self.tr('btn_stop')}  [{tk_stop}]", px0 + pw0 * 0.5, py0 + ph0 * 0.5, 13.5, "md", C_TX, anchor="center")
         else:
             paste_sp("cta_start_idle", sx0, sy0)
             paste_sp("cta_stop_idle", px0, py0)
-            d.text(((sx0 + sw0 * 0.5) * S, (sy0 + sh0 * 0.5) * S), f"{self.tr('btn_start')}  [{sk}]", font=self.fnt(13.0, "sb"), fill=C_CTA_FG + (255,), anchor="mm")
-            d.text(((px0 + pw0 * 0.5) * S, (py0 + ph0 * 0.5) * S), f"{self.tr('btn_stop')}  [{tk_stop}]", font=self.fnt(13.0, "md"), fill=(102, 108, 122, 255), anchor="mm")
+            paste_txt("cta_start_tx", f"{self.tr('btn_start')}  [{sk}]", sx0 + sw0 * 0.5, sy0 + sh0 * 0.5, 13.5, "sb", C_CTA_FG, anchor="center")
+            paste_txt("cta_stop_tx", f"{self.tr('btn_stop')}  [{tk_stop}]", px0 + pw0 * 0.5, py0 + ph0 * 0.5, 13.5, "md", (126, 134, 150), anchor="center")
         return out
 
     # ---------------- Smooth 60 FPS Canvas Animation Engine (0% Idle CPU) ----------------
     def _ensure_anim_loop(self) -> None:
-        if not self.anim_running and self.anim_jobs:
-            self.anim_running = True
-            ms = 16 if any(k != "pulse" for k in self.anim_jobs) else 34
-            self._anim_after_id = self.root.after(ms, self._step_anims)
+        if self.anim_jobs:
+            self._set_timer_res(True)
+            if not self.anim_running:
+                self.anim_running = True
+                ms = 14 if any(k != "pulse" for k in self.anim_jobs) else 24
+                self._anim_after_id = self.root.after(ms, self._step_anims)
 
     def _queue_anim(self, key: str, job: dict) -> None:
         self.anim_jobs[key] = job
         self._ensure_anim_loop()
 
-    def _start_group_move(self, tag: str, dx0: float, dy0: float, dur: float = 0.18, now_t: float | None = None, delete_on_done: bool = False) -> None:
+    def _start_group_move(self, tag: str, dx0: float, dy0: float, dur: float = 0.20, now_t: float | None = None, delete_on_done: bool = False) -> None:
         if f"grp:{tag}" in self.anim_jobs:
             prev = self.anim_jobs.pop(f"grp:{tag}")
             self.cv.move(tag, -int(prev["ap_x"]), -int(prev["ap_y"]))
@@ -2959,11 +3195,12 @@ class App:
             self._anim_after_id = None
         if snap:
             for _, job in list(self.anim_jobs.items()):
-                if job.get("kind") == "group_move":
+                kind = job.get("kind")
+                if kind == "group_move":
                     self.cv.move(job["tag"], -int(job["ap_x"]), -int(job["ap_y"]))
                     if job.get("delete_on_done"):
                         self.cv.delete(job["tag"])
-                elif job.get("kind") == "switch":
+                elif kind == "switch":
                     skey = job["skey"]
                     item = self._switch_items.get(skey)
                     if item:
@@ -2974,35 +3211,52 @@ class App:
                         self.cv.coords(thm_id, int(round(x * self.S)), int(round(y)))
                         self.cv.itemconfigure(trk_id, image=self.sprites["trk_on" if on else "trk_off"])
                         self.cv.itemconfigure(thm_id, image=self.sprites["thm_on" if on else "thm_off"])
-                elif job.get("kind") == "radio":
+                elif kind == "radio":
                     iid = self._radio_items.get(job["mval"])
                     if iid:
                         self.cv.itemconfigure(iid, image=self.sprites["rad_on" if job["v1"] >= 0.5 else "rad_off"])
-                elif job.get("kind") == "item_x":
+                elif kind == "item_x":
                     iid = job["item"]
                     coords = self.cv.coords(iid)
                     if len(coords) >= 2:
                         self.cv.coords(iid, int(round(job["x1"] * self.S)), coords[1])
-                elif job.get("kind") == "item_y":
+                elif kind == "item_y":
                     iid = job["item"]
                     coords = self.cv.coords(iid)
                     if len(coords) >= 2:
                         self.cv.coords(iid, coords[0], int(round(job["y1"] * self.S)))
-                elif job.get("kind") == "chip":
+                elif kind == "chip":
                     cinfo = self._chip_items.get(job["cid"])
                     if cinfo:
-                        bg_id, tx_id, cw_dp, ch_dp, _, _ = cinfo
+                        bg_id, _, _, prefix, _ = cinfo
                         on = job["v1"] >= 0.5
-                        self.cv.itemconfigure(bg_id, image=self.sprites[f"chip_{cw_dp}_{ch_dp}_{4 if on else 0}"])
-                        self.cv.itemconfigure(tx_id, fill=hexc(C_TX if on else C_TX2))
-                elif job.get("kind") == "flash":
-                    self.cv.itemconfigure(job["item"], fill=job["rest_fill"])
+                        self.cv.itemconfigure(bg_id, image=self.sprites[f"{prefix}_{12 if on else 0}"])
+                elif kind == "sub":
+                    sub_k = job["sub_k"]
+                    sc = self._sub_scrims.get(sub_k)
+                    if sc:
+                        sid, _ = sc
+                        step = 8 if job["v1"] >= 0.5 else 0
+                        if step <= 0:
+                            self.cv.itemconfigure(sid, state="hidden")
+                        else:
+                            self.cv.itemconfigure(sid, state="normal", image=self.sprites[f"sub_scrim_{step}"])
+                        self._sub_scrims[sub_k] = (sid, float(step))
+                elif kind == "fade_frames":
+                    try:
+                        self.cv.delete(job["item"])
+                    except Exception:
+                        pass
+                elif kind == "flash":
+                    self._set_dyn_text(job["key"], job["text"], job["size_dp"], job["wt"], job["rest_rgb"])
         for hid in list(self._hover_items.values()):
             self.cv.delete(hid)
         self._hover_items.clear()
         self._hover_levels.clear()
+        self._trans_photos.clear()
         self.anim_jobs.clear()
         self.anim_running = False
+        self._set_timer_res(False)
         self._commit_pending_geo()
         if "st_pulse" in self._canvas_items:
             self.cv.itemconfigure(self._canvas_items["st_pulse"], state="hidden")
@@ -3022,6 +3276,7 @@ class App:
                         pass
                     self._anim_after_id = None
                 self.anim_running = False
+                self._set_timer_res(False)
             return
         st = "stopping" if self.state == "stopping" else "running"
         if "pulse" not in self.anim_jobs:
@@ -3048,9 +3303,40 @@ class App:
             "kind": "switch",
             "skey": skey,
             "t0": time.monotonic(),
-            "dur": 0.18,
+            "dur": 0.21,
             "v0": v0,
             "v1": 1.0 if target_on else 0.0,
+            "cur_t": v0,
+        })
+
+    def animate_sub_scrim(self, sub_k: str, parent_on: bool) -> None:
+        sc = self._sub_scrims.get(sub_k)
+        if not sc:
+            return
+        sid, cur_step = sc
+        if not self.live("anim"):
+            self.anim_jobs.pop(f"sub:{sub_k}", None)
+            if parent_on:
+                self.cv.itemconfigure(sid, state="hidden")
+                self._sub_scrims[sub_k] = (sid, 0.0)
+            else:
+                self.cv.itemconfigure(sid, state="normal", image=self.sprites["sub_scrim_8"])
+                self.cv.tag_raise(sid)
+                self._sub_scrims[sub_k] = (sid, 8.0)
+            return
+        prev = self.anim_jobs.get(f"sub:{sub_k}")
+        v0 = float(prev["cur_t"]) if prev else clamp(cur_step / 8.0, 0.0, 1.0)
+        v1 = 0.0 if parent_on else 1.0
+        init_step = max(1, int(round(v0 * 8.0)))
+        self.cv.itemconfigure(sid, state="normal", image=self.sprites[f"sub_scrim_{init_step}"])
+        self.cv.tag_raise(sid)
+        self._queue_anim(f"sub:{sub_k}", {
+            "kind": "sub",
+            "sub_k": sub_k,
+            "t0": time.monotonic(),
+            "dur": 0.19,
+            "v0": v0,
+            "v1": v1,
             "cur_t": v0,
         })
 
@@ -3067,7 +3353,7 @@ class App:
             "kind": "radio",
             "mval": mval,
             "t0": time.monotonic(),
-            "dur": 0.18,
+            "dur": 0.19,
             "v0": v0,
             "v1": 1.0 if target_on else 0.0,
             "cur_t": v0,
@@ -3087,7 +3373,7 @@ class App:
             "kind": "item_y",
             "item": iid,
             "t0": time.monotonic(),
-            "dur": 0.18,
+            "dur": 0.20,
             "y0": y0,
             "y1": y1,
         })
@@ -3103,13 +3389,12 @@ class App:
             info = self._chip_items.get(cid)
             if not info:
                 continue
-            bg_id, tx_id, cw_dp, ch_dp, _, tag_str = info
+            bg_id, _, _, prefix, _ = info
             target_on = cid.endswith("_hold") or cid.endswith("_stand") or cid.endswith("_on")
             is_on = (target_on == bool(new_val))
             if snap or not self.live("anim"):
                 self.anim_jobs.pop(f"chip:{cid}", None)
-                self.cv.itemconfigure(bg_id, image=self.sprites[f"chip_{cw_dp}_{ch_dp}_{4 if is_on else 0}"])
-                self.cv.itemconfigure(tx_id, fill=hexc(C_TX if is_on else C_TX2))
+                self.cv.itemconfigure(bg_id, image=self.sprites[f"{prefix}_{12 if is_on else 0}"])
             else:
                 prev = self.anim_jobs.get(f"chip:{cid}")
                 v0 = float(prev["cur_t"]) if prev else (0.0 if is_on else 1.0)
@@ -3117,24 +3402,26 @@ class App:
                     "kind": "chip",
                     "cid": cid,
                     "t0": time.monotonic(),
-                    "dur": 0.16,
+                    "dur": 0.18,
                     "v0": v0,
                     "v1": 1.0 if is_on else 0.0,
                     "cur_t": v0,
                 })
 
-    def flash_item(self, canvas_key: str, rest_col=C_TX) -> None:
-        iid = self._canvas_items.get(canvas_key)
-        if not iid or not self.live("anim"):
+    def flash_item(self, canvas_key: str, text_str: str, rest_col=C_TX, size_dp: float = 13.5, wt: str = "bd") -> None:
+        if canvas_key not in self._canvas_items or not self.live("anim"):
             return
-        self.cv.itemconfigure(iid, fill=hexc(C_CTA_HOV))
+        self._set_dyn_text(canvas_key, text_str, size_dp, wt, C_CTA_HOV)
         self._queue_anim(f"fl:{canvas_key}", {
             "kind": "flash",
-            "item": iid,
+            "key": canvas_key,
+            "text": text_str,
+            "size_dp": size_dp,
+            "wt": wt,
             "t0": time.monotonic(),
             "dur": 0.18,
-            "rest_fill": hexc(rest_col),
             "rest_rgb": rest_col,
+            "last_q": -1,
         })
 
     def _set_hover_visual(self, rid: str, frac: float) -> None:
@@ -3143,7 +3430,7 @@ class App:
             return
         prefix, hx, hy, grp, lay = spec
         self._hover_levels[rid] = frac
-        step = int(round(clamp(frac, 0.0, 1.0) * 4.0))
+        step = int(round(clamp(frac, 0.0, 1.0) * 10.0))
         hid = self._hover_items.get(rid)
         if step <= 0:
             if hid:
@@ -3171,24 +3458,26 @@ class App:
         self._anim_after_id = None
         if not self.anim_jobs:
             self.anim_running = False
+            self._set_timer_res(False)
             self._commit_pending_geo()
             return
         now = time.monotonic()
         done: list[str] = []
         grp_finished = False
+        geo_ease: float | None = None
         for key, job in list(self.anim_jobs.items()):
             kind = job["kind"]
             if kind == "pulse":
                 if not self.live("anim") or self.page != "main" or (not self.running and self.state == "ready"):
                     done.append(key)
                     continue
-                if now - job["last_ts"] >= 0.032:
+                if now - job["last_ts"] >= 0.022:
                     job["last_ts"] = now
                     pid = self._canvas_items.get("st_pulse")
                     if pid:
                         st = "stopping" if self.state == "stopping" else "running"
-                        phase = ((now - job["t0"]) % 1.2) / 1.2
-                        step = min(7, int(phase * 8.0))
+                        phase = ((now - job["t0"]) % 1.6) / 1.6
+                        step = min(31, int(phase * 32.0))
                         sp_k = f"pulse_{st}_{step}"
                         if sp_k != job["last_key"]:
                             job["last_key"] = sp_k
@@ -3209,7 +3498,7 @@ class App:
                 nx = tx_off + (tx_on - tx_off) * cur_t
                 y = self.cv.coords(thm_id)[1]
                 self.cv.coords(thm_id, int(round(nx * self.S)), int(round(y)))
-                s_idx = int(round(clamp(cur_t, 0.0, 1.0) * 8.0))
+                s_idx = int(round(clamp(cur_t, 0.0, 1.0) * 16.0))
                 self.cv.itemconfigure(trk_id, image=self.sprites[f"trk_{s_idx}"])
                 self.cv.itemconfigure(thm_id, image=self.sprites[f"thm_{s_idx}"])
 
@@ -3220,7 +3509,7 @@ class App:
                     continue
                 cur_t = job["v0"] + (job["v1"] - job["v0"]) * ease
                 job["cur_t"] = cur_t
-                r_idx = int(round(clamp(cur_t, 0.0, 1.0) * 6.0))
+                r_idx = int(round(clamp(cur_t, 0.0, 1.0) * 12.0))
                 self.cv.itemconfigure(iid, image=self.sprites[f"rad_{r_idx}"])
 
             elif kind == "item_x":
@@ -3246,20 +3535,50 @@ class App:
                 if not cinfo:
                     done.append(key)
                     continue
-                bg_id, tx_id, cw_dp, ch_dp, _, _ = cinfo
+                bg_id, _, _, prefix, _ = cinfo
                 cur_t = job["v0"] + (job["v1"] - job["v0"]) * ease
                 job["cur_t"] = cur_t
-                step = int(round(clamp(cur_t, 0.0, 1.0) * 4.0))
-                self.cv.itemconfigure(bg_id, image=self.sprites[f"chip_{cw_dp}_{ch_dp}_{step}"])
-                self.cv.itemconfigure(tx_id, fill=hexc(self._lerp_rgb(C_TX2, C_TX, cur_t)))
+                step = int(round(clamp(cur_t, 0.0, 1.0) * 12.0))
+                self.cv.itemconfigure(bg_id, image=self.sprites[f"{prefix}_{step}"])
+
+            elif kind == "sub":
+                sub_k = job["sub_k"]
+                sc = self._sub_scrims.get(sub_k)
+                if not sc:
+                    done.append(key)
+                    continue
+                sid, _ = sc
+                cur_t = job["v0"] + (job["v1"] - job["v0"]) * ease
+                job["cur_t"] = cur_t
+                step = int(round(clamp(cur_t, 0.0, 1.0) * 8.0))
+                if step <= 0:
+                    self.cv.itemconfigure(sid, state="hidden")
+                else:
+                    self.cv.itemconfigure(sid, state="normal", image=self.sprites[f"sub_scrim_{step}"])
+                self._sub_scrims[sub_k] = (sid, float(step))
+
+            elif kind == "fade_frames":
+                frames = job["frames"]
+                idx = min(len(frames) - 1, int(p * len(frames)))
+                if idx != job["last_idx"]:
+                    job["last_idx"] = idx
+                    self.cv.itemconfigure(job["item"], image=frames[idx])
+                if job["x1"] != job["x0"]:
+                    nx = job["x0"] + (job["x1"] - job["x0"]) * ease
+                    self.cv.coords(job["item"], int(round(nx * self.S)), int(round(job["y0"] * self.S)))
 
             elif kind == "hover":
                 cur_t = job["v0"] + (job["v1"] - job["v0"]) * ease
                 self._set_hover_visual(job["rid"], cur_t)
 
             elif kind == "flash":
-                rgb = self._lerp_rgb(C_CTA_HOV, job["rest_rgb"], ease)
-                self.cv.itemconfigure(job["item"], fill=job["rest_fill"] if p >= 1.0 else hexc(rgb))
+                q = int(round(ease * 5.0))
+                if p >= 1.0:
+                    self._set_dyn_text(job["key"], job["text"], job["size_dp"], job["wt"], job["rest_rgb"])
+                elif q != job["last_q"]:
+                    job["last_q"] = q
+                    rgb = self._lerp_rgb(C_CTA_HOV, job["rest_rgb"], q / 5.0)
+                    self._set_dyn_text(job["key"], job["text"], job["size_dp"], job["wt"], rgb)
 
             elif kind == "group_move":
                 rem = (1.0 - p) ** 3
@@ -3271,23 +3590,36 @@ class App:
                     self.cv.move(job["tag"], dpx, dpy)
                     job["ap_x"] += dpx
                     job["ap_y"] += dpy
+                if job["tag"] in ("ui_bot", "ui_footer", "ui_body"):
+                    geo_ease = ease
 
             if p >= 1.0:
                 if kind == "group_move":
                     grp_finished = True
                     if job.get("delete_on_done"):
                         self.cv.delete(job["tag"])
+                elif kind == "fade_frames":
+                    self.cv.delete(job["item"])
                 done.append(key)
 
         for k in done:
             self.anim_jobs.pop(k, None)
+        if not any(job.get("kind") == "fade_frames" for job in self.anim_jobs.values()):
+            self._trans_photos.clear()
+        if self._geo_anim is not None and geo_ease is not None and not HEADLESS:
+            h0, h1 = self._geo_anim
+            cur_wh = int(round(h0 + (h1 - h0) * geo_ease))
+            if cur_wh != getattr(self, "_geo_last_wh", 0):
+                self._geo_last_wh = cur_wh
+                self._set_root_wh(self.Wp, cur_wh)
         if grp_finished and not any(k.startswith("grp:") for k in self.anim_jobs):
             self._commit_pending_geo()
         if self.anim_jobs:
-            ms = 16 if any(k != "pulse" for k in self.anim_jobs) else 34
+            ms = 14 if any(k != "pulse" for k in self.anim_jobs) else 24
             self._anim_after_id = self.root.after(ms, self._step_anims)
         else:
             self.anim_running = False
+            self._set_timer_res(False)
 
     # ---------------- Interactions & Event Handlers ----------------
     def _hit(self, x_ev: float, y_ev: float):
@@ -3321,13 +3653,13 @@ class App:
                 if anim_on:
                     v0 = self._hover_levels.get(old_rid, 0.0)
                     if v0 > 0.01:
-                        self._queue_anim(f"hov:{old_rid}", {"kind": "hover", "rid": old_rid, "t0": now_t, "dur": 0.15, "v0": v0, "v1": 0.0})
+                        self._queue_anim(f"hov:{old_rid}", {"kind": "hover", "rid": old_rid, "t0": now_t, "dur": 0.18, "v0": v0, "v1": 0.0})
                 else:
                     self._set_hover_visual(old_rid, 0.0)
             if self._is_hover_eligible(rid):
                 if anim_on:
                     v0 = self._hover_levels.get(rid, 0.0)
-                    self._queue_anim(f"hov:{rid}", {"kind": "hover", "rid": rid, "t0": now_t, "dur": 0.10, "v0": v0, "v1": 1.0})
+                    self._queue_anim(f"hov:{rid}", {"kind": "hover", "rid": rid, "t0": now_t, "dur": 0.13, "v0": v0, "v1": 1.0})
                 else:
                     self._set_hover_visual(rid, 1.0)
 
@@ -3339,7 +3671,7 @@ class App:
             if self.live("anim"):
                 v0 = self._hover_levels.get(old_rid, 0.0)
                 if v0 > 0.01:
-                    self._queue_anim(f"hov:{old_rid}", {"kind": "hover", "rid": old_rid, "t0": time.monotonic(), "dur": 0.15, "v0": v0, "v1": 0.0})
+                    self._queue_anim(f"hov:{old_rid}", {"kind": "hover", "rid": old_rid, "t0": time.monotonic(), "dur": 0.18, "v0": v0, "v1": 0.0})
             else:
                 self._set_hover_visual(old_rid, 0.0)
 
@@ -3365,19 +3697,21 @@ class App:
         if self.live("lang") == lang:
             return
         prev_lang = self.live("lang")
+        old_comp = self._snapshot_composite() if self.live("anim") else None
         self._clear_undo()
         self.set_cfg("lang", lang)
         self.save()
-        self.rebuild_ui(anim_spec={"kind": "lang", "prev_lang": prev_lang})
+        self.rebuild_ui(anim_spec={"kind": "lang", "prev_lang": prev_lang, "old_comp": old_comp})
 
     def toggle_page(self) -> None:
         if self.capturing:
             self.end_capture()
         old_footer_y = self._footer_y
+        old_comp = self._snapshot_composite() if self.live("anim") else None
         self.page = "set" if self.page == "main" else "main"
         self.scroll_y = 0.0
         dir_x = 1.0 if self.page == "set" else -1.0
-        self.rebuild_ui(anim_spec={"kind": "page", "dir": dir_x, "old_footer_y": old_footer_y})
+        self.rebuild_ui(anim_spec={"kind": "page", "dir": dir_x, "old_footer_y": old_footer_y, "old_comp": old_comp})
 
     def toggle_params(self) -> None:
         anim_on = bool(self.live("anim"))
@@ -3420,36 +3754,30 @@ class App:
     def flip(self, key: str) -> None:
         undo_was = self._clear_undo()
         sw_from = self._capture_switch_fracs() if self.live("anim") else {}
-        old_comp = self._snapshot_composite() if (key in ("swing", "walk") and self.live("anim") and self.live(key)) else None
-        sub_b = self._sub_bounds.get(key)
         new_val = not bool(self.live(key))
         self.set_cfg(key, new_val)
         self.save()
-        if key in ("swing", "walk") or undo_was:
-            spec = None
-            if self.live("anim"):
-                if key in ("swing", "walk") and not undo_was and sub_b is not None:
-                    sy0, sy1 = sub_b
-                    if new_val:
-                        spec = {"kind": "expand", "split_y0": sy0, "split_y1": sy1, "sw_from": sw_from}
-                    else:
-                        mid_crop = None
-                        if old_comp is not None and sy1 > sy0:
-                            y0_px = max(0, min(old_comp.height - 1, int(round(sy0 * self.S))))
-                            y1_px = max(y0_px + 1, min(old_comp.height, int(round(sy1 * self.S))))
-                            mid_crop = old_comp.crop((0, y0_px, self.Wp, y1_px))
-                        spec = {"kind": "collapse", "split_y0": sy0, "delta_h": sy1 - sy0, "mid_crop": mid_crop, "sw_from": sw_from}
-                else:
-                    spec = {"kind": "sw_only", "sw_from": sw_from}
+        if undo_was:
+            spec = {"kind": "sw_only", "sw_from": sw_from} if self.live("anim") else None
             self.rebuild_ui(anim_spec=spec)
-        else:
-            self.animate_switch(key, new_val)
-            self.refresh_dynamic_items()
+            return
+        self.animate_switch(key, new_val)
+        if key == "swing":
+            self.animate_sub_scrim("pickaxe", new_val)
+        elif key == "walk":
+            self.animate_sub_scrim("pace", new_val)
+        self.refresh_dynamic_items()
 
     def set_bool(self, key: str, val: bool) -> None:
         old_val = bool(self.live(key))
         undo_was = self._clear_undo()
+        auto_swing = (key == "mouse" and not self.live("swing"))
+        auto_walk = (key == "stand" and not self.live("walk"))
         self.set_cfg(key, val)
+        if auto_swing:
+            self.set_cfg("swing", True)
+        if auto_walk:
+            self.set_cfg("walk", True)
         self.save()
         if key == "anim" and not val:
             self._stop_all_anims(snap=True)
@@ -3461,8 +3789,16 @@ class App:
             return
         if undo_was:
             self.rebuild_ui()
-        elif old_val != bool(val):
+            return
+        if old_val != bool(val):
             self.animate_chip_pair(key, bool(val))
+        if auto_swing:
+            self.animate_switch("swing", True)
+            self.animate_sub_scrim("pickaxe", True)
+        if auto_walk:
+            self.animate_switch("walk", True)
+            self.animate_sub_scrim("pace", True)
+        if old_val != bool(val) or auto_swing or auto_walk:
             self.refresh_dynamic_items()
 
     def bump_delay(self, which: str, delta: int) -> None:
@@ -3481,7 +3817,7 @@ class App:
             self.rebuild_ui()
         else:
             self.refresh_dynamic_items()
-            self.flash_item(f"val_{which}")
+            self.flash_item(f"val_{which}", str(self.live(which)))
 
     def bump_turn(self, delta: int) -> None:
         undo_was = self._clear_undo()
@@ -3492,7 +3828,7 @@ class App:
             self.rebuild_ui()
         else:
             self.refresh_dynamic_items()
-            self.flash_item("val_turn_px")
+            self.flash_item("val_turn_px", str(nv))
 
     def reset_all(self) -> None:
         if self.running:
@@ -3714,6 +4050,7 @@ class App:
             self._anim_after_id = None
         self.anim_jobs.clear()
         self.anim_running = False
+        self._set_timer_res(False)
         self.stop_event.set()
         if self.engine:
             self.engine.release_all()
