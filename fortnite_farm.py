@@ -23,12 +23,15 @@ from collections import deque
 # DPI & Windows API Signatures (64-bit safe, set BEFORE GUI/C++ imports)
 # ---------------------------------------------------------------------------
 try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 except Exception:
     try:
-        ctypes.windll.user32.SetProcessDPIAware()
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
-        pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 import tkinter as tk
 from tkinter import messagebox
@@ -316,12 +319,17 @@ def set_cursor_pos(x: int, y: int) -> None:
 
 
 def click_screen_pos(x: int, y: int) -> None:
-    """Move cursor to exact desktop screen coordinates (multi-monitor safe) and left-click."""
+    """Move cursor to exact desktop screen coordinates, wake Unreal Slate hover, and left-click."""
     set_cursor_pos(int(x), int(y))
-    time.sleep(0.04)
+    if os.environ.get("PIRATE_HEADLESS") != "1":
+        send_mouse_rel(1, 0)
+        send_mouse_rel(-1, 0)
+        set_cursor_pos(int(x), int(y))
+    time.sleep(0.09)
     send_mouse_button(True)
-    time.sleep(0.05)
+    time.sleep(0.07)
     send_mouse_button(False)
+    time.sleep(0.18)
 
 
 def active_fortnite_hwnd(allow_any_window: bool = False) -> int | None:
@@ -682,9 +690,21 @@ TEXT = {
 
 
 # ---------------------------------------------------------------------------
-# Template Matcher (Hardened halo-masked connecting detection + 4K coarse-to-fine)
+# Template Matcher (Multi-resolution 0.50x..2.15x, inner-core & dual-polarity)
 # ---------------------------------------------------------------------------
 TEMPLATE_NAMES = ("play_again", "play_button", "menu_button", "return_lobby", "connecting")
+
+# Tight inner-core regions (y0, y1, x0, x1) strictly inside each button containing the text/icon,
+# eliminating background corners and outer borders so any 3D post-match background matches cleanly.
+CORE_BOXES: dict[str, tuple[int, int, int, int]] = {
+    "play_again": (24, 72, 95, 393),
+    "play_button": (24, 73, 60, 285),
+    "return_lobby": (20, 58, 165, 425),
+    "menu_button": (18, 60, 42, 98),
+}
+
+# Post-match buttons that can appear either selected (yellow fill, dark text) or unselected (dark fill, light text)
+DUAL_POLARITY_CORE: set[str] = {"play_again", "return_lobby"}
 
 
 def check_templates_exist() -> None:
@@ -698,8 +718,14 @@ def check_templates_exist() -> None:
 class Matcher:
     def __init__(self) -> None:
         self.data: dict[str, list[tuple[np.ndarray, np.ndarray | None, int, int]]] = {}
-        self.scales = (1.00, 0.94, 1.06, 0.88, 1.12, 0.80, 1.20, 0.72, 1.30, 1.40, 1.50, 1.75, 2.00)
+        self.core_data: dict[str, list[tuple[np.ndarray, int, int, int, int, int, int]]] = {}
+        self.scales = (
+            1.00, 0.96, 1.04, 0.92, 1.08, 0.88, 1.12, 0.83, 1.17, 0.79, 1.22,
+            0.75, 1.28, 0.71, 1.33, 0.67, 1.40, 0.63, 1.48, 0.59, 1.56, 0.55,
+            1.65, 0.50, 1.75, 1.88, 2.00, 2.15,
+        )
         self._raw_imgs: dict[str, np.ndarray] = {}
+        self._raw_cores: dict[str, tuple[np.ndarray, int, int, int, int]] = {}
         self._coarse_cache: dict[tuple[str, float, int], np.ndarray] = {}
         kernel = np.ones((5, 5), np.uint8)
         for name in TEMPLATE_NAMES:
@@ -729,17 +755,183 @@ class Matcher:
                 variants.append((tpl, mask, w, h))
             self.data[name] = variants
 
-    def _coarse_tpl(self, name: str, scale: float, c_div: int) -> np.ndarray:
-        key = (name, scale, c_div)
+            if name in CORE_BOXES:
+                cy0, cy1, cx0, cx1 = CORE_BOXES[name]
+                core_img = img[cy0:cy1, cx0:cx1]
+                self._raw_cores[name] = (core_img, cx0, cy0, w0, h0)
+                ch0, cw0 = core_img.shape[:2]
+                c_variants = []
+                for scale in self.scales:
+                    cw = max(16, int(round(cw0 * scale)))
+                    ch = max(10, int(round(ch0 * scale)))
+                    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+                    ctpl = cv2.resize(core_img, (cw, ch), interpolation=interp)
+                    ox = int(round(cx0 * scale))
+                    oy = int(round(cy0 * scale))
+                    fw = max(20, int(round(w0 * scale)))
+                    fh = max(12, int(round(h0 * scale)))
+                    c_variants.append((ctpl, cw, ch, ox, oy, fw, fh))
+                self.core_data[name] = c_variants
+
+    def _coarse_tpl(self, key_prefix: str, img: np.ndarray, scale: float, c_div: int) -> np.ndarray:
+        key = (key_prefix, scale, c_div)
         ctpl = self._coarse_cache.get(key)
         if ctpl is None:
-            img = self._raw_imgs[name]
             h0, w0 = img.shape[:2]
-            cw = max(14, int(round(w0 * scale / c_div)))
-            ch = max(8, int(round(h0 * scale / c_div)))
+            cw = max(10, int(round(w0 * scale / c_div)))
+            ch = max(6, int(round(h0 * scale / c_div)))
             ctpl = cv2.resize(img, (cw, ch), interpolation=cv2.INTER_AREA)
             self._coarse_cache[key] = ctpl
         return ctpl
+
+    def _search_single_frame(
+        self,
+        gray: np.ndarray,
+        name: str,
+        threshold: float,
+        stop_event: threading.Event | None = None,
+    ) -> tuple[float, tuple[int, int, int, int] | None]:
+        variants = self.data.get(name, ())
+        if not variants:
+            return -1.0, None
+        best = -1.0
+        box = None
+        gh, gw = gray.shape[:2]
+        early_stop = max(threshold + 0.06, 0.94)
+        dual_pol = name in DUAL_POLARITY_CORE
+        has_core = name in self.core_data
+
+        # Fast 2-stage coarse-to-fine pyramid search on full-screen frames (720p..4K)
+        if gh >= 360 and gw >= 600:
+            est_h = gh / 1080.0
+            est_w = gw / 1920.0
+            est_min = min(est_h, est_w)
+            est_max = max(est_h, est_w)
+            lo_sc = max(0.48, min(0.65, est_min * 0.58))
+            hi_sc = min(2.20, max(1.35, est_max * 1.42))
+            indexed = [
+                (idx, self.scales[idx])
+                for idx in range(len(variants))
+                if lo_sc <= self.scales[idx] <= hi_sc
+            ]
+            if not indexed:
+                indexed = [(idx, self.scales[idx]) for idx in range(len(variants))]
+            est_mid = 0.5 * (est_h + est_w)
+            indexed.sort(key=lambda item: (0 if item[1] == 1.0 and abs(est_mid - 1.0) <= 0.25 else 1, abs(item[1] - est_mid)))
+
+            c_div = 4 if gw >= 2400 else 2
+            c_gray = cv2.resize(gray, (max(32, gw // c_div), max(32, gh // c_div)), interpolation=cv2.INTER_AREA)
+            raw_src = self._raw_cores[name][0] if has_core else self._raw_imgs[name]
+            prefix = f"core:{name}" if has_core else f"full:{name}"
+
+            coarse_hits: list[tuple[float, int, float, int, int]] = []
+            for idx, sc in indexed:
+                if stop_event is not None and stop_event.is_set():
+                    return -1.0, None
+                _, _, w, h = variants[idx]
+                if h >= gh or w >= gw:
+                    continue
+                ctpl = self._coarse_tpl(prefix, raw_src, sc, c_div)
+                ch_c, cw_c = ctpl.shape[:2]
+                if ch_c >= c_gray.shape[0] or cw_c >= c_gray.shape[1]:
+                    continue
+                res_c = cv2.matchTemplate(c_gray, ctpl, cv2.TM_CCOEFF_NORMED)
+                min_v, max_v, min_l, max_l = cv2.minMaxLoc(res_c)
+                coarse_hits.append((float(max_v), idx, sc, int(max_l[0]), int(max_l[1])))
+                if dual_pol and (-min_v) > 0.45:
+                    coarse_hits.append((float(-min_v), idx, sc, int(min_l[0]), int(min_l[1])))
+                # Also extract 2nd local peak so bright HUD clutter never masks the button
+                if has_core:
+                    res_c2 = res_c.copy()
+                    ry0 = max(0, max_l[1] - max(4, ch_c // 2))
+                    ry1 = min(res_c2.shape[0], max_l[1] + max(4, ch_c // 2) + 1)
+                    rx0 = max(0, max_l[0] - max(6, cw_c // 2))
+                    rx1 = min(res_c2.shape[1], max_l[0] + max(6, cw_c // 2) + 1)
+                    res_c2[ry0:ry1, rx0:rx1] = 0.0
+                    _, max_v2, _, max_l2 = cv2.minMaxLoc(res_c2)
+                    if max_v2 > 0.45:
+                        coarse_hits.append((float(max_v2), idx, sc, int(max_l2[0]), int(max_l2[1])))
+
+            coarse_hits.sort(key=lambda item: item[0], reverse=True)
+            pad = max(24, c_div * 10)
+            for _, idx, _sc, cx, cy in coarse_hits[:6]:
+                if stop_event is not None and stop_event.is_set():
+                    return -1.0, None
+                tpl, mask, w, h = variants[idx]
+                if has_core:
+                    ctpl, cw, ch, ox, oy, fw, fh = self.core_data[name][idx]
+                    fx, fy = cx * c_div - ox, cy * c_div - oy
+                else:
+                    fx, fy = cx * c_div, cy * c_div
+                x0 = max(0, fx - pad)
+                y0 = max(0, fy - pad)
+                x1 = min(gw, fx + w + pad)
+                y1 = min(gh, fy + h + pad)
+                roi = gray[y0:y1, x0:x1]
+                if roi.shape[0] >= h and roi.shape[1] >= w:
+                    if mask is not None:
+                        res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED, mask=mask)
+                        res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+                    else:
+                        res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
+                    _, score, _, loc = cv2.minMaxLoc(res)
+                    if score > best:
+                        best = float(score)
+                        box = (int(x0 + loc[0]), int(y0 + loc[1]), int(w), int(h))
+                if has_core:
+                    ctpl, cw, ch, ox, oy, fw, fh = self.core_data[name][idx]
+                    if roi.shape[0] >= ch and roi.shape[1] >= cw:
+                        res_core = cv2.matchTemplate(roi, ctpl, cv2.TM_CCOEFF_NORMED)
+                        c_min_v, c_max_v, c_min_l, c_max_l = cv2.minMaxLoc(res_core)
+                        c_score = float(c_max_v)
+                        c_loc = c_max_l
+                        if dual_pol and (-c_min_v) > c_score:
+                            c_score = float(-c_min_v)
+                            c_loc = c_min_l
+                        if c_score > best:
+                            best = c_score
+                            bx = max(0, int(x0 + c_loc[0] - ox))
+                            by = max(0, int(y0 + c_loc[1] - oy))
+                            box = (bx, by, int(fw), int(fh))
+                if best >= early_stop:
+                    break
+            if best >= threshold and box is not None:
+                return best, box
+            return best, None
+
+        for idx, (tpl, mask, w, h) in enumerate(variants):
+            if stop_event is not None and stop_event.is_set():
+                return -1.0, None
+            if h < gh and w < gw:
+                if mask is not None:
+                    res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED, mask=mask)
+                    res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+                else:
+                    res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED)
+                _, score, _, loc = cv2.minMaxLoc(res)
+                if score > best:
+                    best = float(score)
+                    box = (int(loc[0]), int(loc[1]), int(w), int(h))
+            if has_core:
+                ctpl, cw, ch, ox, oy, fw, fh = self.core_data[name][idx]
+                if ch < gh and cw < gw:
+                    res_core = cv2.matchTemplate(gray, ctpl, cv2.TM_CCOEFF_NORMED)
+                    c_min_v, c_max_v, c_min_l, c_max_l = cv2.minMaxLoc(res_core)
+                    c_score = float(c_max_v)
+                    c_loc = c_max_l
+                    if dual_pol and (-c_min_v) > c_score:
+                        c_score = float(-c_min_v)
+                        c_loc = c_min_l
+                    if c_score > best:
+                        best = c_score
+                        bx = max(0, int(c_loc[0] - ox))
+                        by = max(0, int(c_loc[1] - oy))
+                        box = (bx, by, int(fw), int(fh))
+            if best >= early_stop:
+                break
+        if best >= threshold and box is not None:
+            return best, box
+        return best, None
 
     def find(
         self,
@@ -750,88 +942,21 @@ class Matcher:
     ) -> tuple[float, tuple[int, int, int, int] | None]:
         if gray is None or gray.size == 0:
             return -1.0, None
-        variants = self.data.get(name, ())
-        if not variants:
-            return -1.0, None
-        best = -1.0
-        box = None
-        gh, gw = gray.shape[:2]
-        early_stop = max(threshold + 0.05, 0.94)
-
-        # Fast 2-stage coarse-to-fine pyramid search on full-screen frames (1080p..4K)
-        if gh >= 400 and gw >= 640:
-            est = max(0.65, min(2.25, gh / 1080.0))
-            lo_sc, hi_sc = min(0.72, est * 0.65), max(1.20, est * 1.38)
-            indexed = [
-                (idx, self.scales[idx], variants[idx])
-                for idx in range(len(variants))
-                if lo_sc <= self.scales[idx] <= hi_sc
-            ]
-            if not indexed:
-                indexed = [(idx, self.scales[idx], variants[idx]) for idx in range(len(variants))]
-            indexed.sort(key=lambda item: (0 if item[1] == 1.0 and abs(est - 1.0) <= 0.35 else 1, abs(item[1] - est)))
-
-            c_div = 4 if gw >= 2400 else 2
-            c_gray = cv2.resize(gray, (max(32, gw // c_div), max(32, gh // c_div)), interpolation=cv2.INTER_AREA)
-            coarse_hits: list[tuple[float, float, int, int, np.ndarray, np.ndarray | None, int, int]] = []
-            for _, sc, (tpl, mask, w, h) in indexed:
-                if stop_event is not None and stop_event.is_set():
-                    return -1.0, None
-                if h >= gh or w >= gw:
-                    continue
-                ctpl = self._coarse_tpl(name, sc, c_div)
-                if ctpl.shape[0] >= c_gray.shape[0] or ctpl.shape[1] >= c_gray.shape[1]:
-                    continue
-                res_c = cv2.matchTemplate(c_gray, ctpl, cv2.TM_CCOEFF_NORMED)
-                _, cscore, _, cloc = cv2.minMaxLoc(res_c)
-                coarse_hits.append((float(cscore), sc, int(cloc[0]), int(cloc[1]), tpl, mask, w, h))
-
-            coarse_hits.sort(key=lambda item: item[0], reverse=True)
-            pad = max(20, c_div * 8)
-            for _, _sc, cx, cy, tpl, mask, w, h in coarse_hits[:3]:
-                if stop_event is not None and stop_event.is_set():
-                    return -1.0, None
-                fx, fy = cx * c_div, cy * c_div
-                x0 = max(0, fx - pad)
-                y0 = max(0, fy - pad)
-                x1 = min(gw, fx + w + pad)
-                y1 = min(gh, fy + h + pad)
-                roi = gray[y0:y1, x0:x1]
-                if roi.shape[0] < h or roi.shape[1] < w:
-                    continue
-                if mask is not None:
-                    res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED, mask=mask)
-                    res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
-                else:
-                    res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
-                _, score, _, loc = cv2.minMaxLoc(res)
-                if score > best:
-                    best = float(score)
-                    box = (int(x0 + loc[0]), int(y0 + loc[1]), int(w), int(h))
-                    if best >= early_stop:
-                        break
-            if best >= threshold and box is not None:
-                return best, box
-            return best, None
-
-        for tpl, mask, w, h in variants:
-            if stop_event is not None and stop_event.is_set():
-                return -1.0, None
-            if h >= gh or w >= gw:
-                continue
-            if mask is not None:
-                res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED, mask=mask)
-                res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
-            else:
-                res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED)
-            _, score, _, loc = cv2.minMaxLoc(res)
-            if score > best:
-                best = float(score)
-                box = (int(loc[0]), int(loc[1]), int(w), int(h))
-                if best >= early_stop:
-                    break
-        if best >= threshold and box is not None:
+        best, box = self._search_single_frame(gray, name, threshold, stop_event)
+        if box is not None:
             return best, box
+        # For non-16:9 aspect ratios (e.g. stretched 4:3, 5:4, 16:10, 21:9), un-stretch to 16:9 and map box back
+        gh, gw = gray.shape[:2]
+        if gh >= 360 and gw >= 600 and abs((gw / gh) - (16.0 / 9.0)) > 0.03:
+            norm_w = int(round(gh * 16.0 / 9.0))
+            norm_gray = cv2.resize(gray, (norm_w, gh), interpolation=cv2.INTER_LINEAR)
+            s2, b2 = self._search_single_frame(norm_gray, name, threshold, stop_event)
+            if s2 > best:
+                best = s2
+            if b2 is not None:
+                sx = gw / float(norm_w)
+                nx, ny, nw, nh = b2
+                return s2, (int(round(nx * sx)), int(ny), int(round(nw * sx)), int(nh))
         return best, None
 
 
@@ -1349,14 +1474,14 @@ class Engine:
 
     def click(self, name: str, label: str, timeout: float | None = None) -> bool:
         start = time.monotonic()
-        is_lobby_play = name in ("play_button", "play_again")
+        cooldown_s = 6.0 if name == "play_button" else (1.0 if name == "play_again" else 0.0)
         while not self.stop.is_set():
             if not self.check_target_window_active():
                 if self.stop.is_set() or (timeout is not None and (time.monotonic() - start) >= timeout):
                     return False
                 time.sleep(0.2)
                 continue
-            if is_lobby_play and (time.monotonic() - self._last_button_click_ts.get(name, -999.0)) < 6.0:
+            if cooldown_s > 0.0 and (time.monotonic() - self._last_button_click_ts.get(name, -999.0)) < cooldown_s:
                 if timeout is not None and (time.monotonic() - start) >= timeout:
                     return False
                 time.sleep(0.2)
@@ -1385,6 +1510,18 @@ class Engine:
                         time.sleep(0.16)
                         continue
                     box = box2
+                elif name == "play_again":
+                    # Release movement keys and let post-match slide-in animation settle before clicking
+                    with self.lock:
+                        self.release_all()
+                    time.sleep(0.18)
+                    if self.stop.is_set() or not self.check_target_window_active():
+                        return False
+                    gray2 = self.frame()
+                    if gray2 is not None:
+                        _, box2 = self.matcher.find(gray2, name, stop_event=self.stop)
+                        if box2 is not None:
+                            box = box2
                 x, y, w, h = box
                 px = self.monitor["left"] + x + w // 2
                 py = self.monitor["top"] + y + h // 2
@@ -1395,7 +1532,6 @@ class Engine:
                         if self.check_target_window_active():
                             self.release_all()
                             click_screen_pos(px, py)
-                            time.sleep(0.05)
                             self.center_cursor()
                             now_click = time.monotonic()
                             self._last_button_click_ts[name] = now_click
@@ -1705,8 +1841,15 @@ class Engine:
             if again is not None:
                 self.enter_busy()
                 try:
-                    if self.click("play_again", "Play Again", timeout=3.0):
-                        self.wait(7.5)
+                    if self.click("play_again", "Play Again", timeout=3.5):
+                        self.wait(1.6)
+                        if not self.stop.is_set() and self.check_target_window_active():
+                            gray_recheck = self.frame()
+                            if gray_recheck is not None:
+                                _, still_again = self.matcher.find(gray_recheck, "play_again", stop_event=self.stop)
+                                if still_again is not None and not self.stop.is_set():
+                                    self.click("play_again", "Play Again", timeout=2.5)
+                        self.wait(4.5)
                 finally:
                     self.exit_busy()
             elif play is not None:

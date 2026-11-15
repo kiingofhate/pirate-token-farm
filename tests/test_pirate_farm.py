@@ -1143,6 +1143,86 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
         self.assertIn(("log", {"key": "log_fn_minimized"}), emitted)
         self.assertIn(("detail", {"key": "dt_fn_minimized"}), emitted)
 
+    def test_play_again_across_all_monitor_resolutions_backgrounds_and_polarities(self):
+        im = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "play_again.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        th, tw = im.shape[:2]
+        pill_mask = (im > 130) | (
+            (np.arange(th)[:, None] >= 25)
+            & (np.arange(th)[:, None] <= 70)
+            & (np.arange(tw)[None, :] >= 100)
+            & (np.arange(tw)[None, :] <= 388)
+        )
+        unselected_im = np.where(im < 90, 200, 49).astype(np.uint8)
+
+        resolutions = [
+            (1280, 720),
+            (1366, 768),
+            (1600, 900),
+            (1440, 1080),
+            (1280, 1024),
+            (1680, 1050),
+            (1920, 1080),
+            (1920, 1200),
+            (2560, 1080),
+            (2560, 1440),
+            (2560, 1600),
+            (3440, 1440),
+            (3840, 2160),
+        ]
+        bx0, by0 = 1350, 880
+        true_cx_1080 = bx0 + tw / 2.0
+        true_cy_1080 = by0 + th / 2.0
+
+        for state_name, btn_img in (("selected", im), ("unselected", unselected_im)):
+            for bg_val in (30, 210):
+                base = np.full((1080, 1920), bg_val, dtype=np.uint8)
+                base[60:110, 200:750] = 200
+                base[68:102, 220:730] = 35
+                roi = base[by0:by0 + th, bx0:bx0 + tw]
+                roi[pill_mask] = btn_img[pill_mask]
+                for res_w, res_h in resolutions:
+                    interp = cv2.INTER_AREA if res_h < 1080 else cv2.INTER_CUBIC
+                    scaled = cv2.resize(base, (res_w, res_h), interpolation=interp)
+                    score, box = self.engine.matcher.find(scaled, "play_again")
+                    self.assertIsNotNone(
+                        box,
+                        f"Failed to detect play_again ({state_name}, bg={bg_val}) at {res_w}x{res_h} (score={score:.3f})",
+                    )
+                    x, y, w, h = box
+                    cx = x + w / 2.0
+                    cy = y + h / 2.0
+                    exp_cx = true_cx_1080 * (res_w / 1920.0)
+                    exp_cy = true_cy_1080 * (res_h / 1080.0)
+                    self.assertLess(abs(cx - exp_cx), max(28.0, res_w * 0.02))
+                    self.assertLess(abs(cy - exp_cy), max(20.0, res_h * 0.02))
+
+    def test_method1_reclicks_play_again_if_first_click_only_focuses_button(self):
+        im = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "play_again.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        unselected_im = np.where(im < 90, 200, 49).astype(np.uint8)
+        frame_unselected = np.full((1080, 1920), 40, dtype=np.uint8)
+        frame_unselected[880:880 + im.shape[0], 1350:1350 + im.shape[1]] = unselected_im
+        frame_selected = np.full((1080, 1920), 40, dtype=np.uint8)
+        frame_selected[880:880 + im.shape[0], 1350:1350 + im.shape[1]] = im
+
+        clicks = []
+
+        def fake_click(name, label, timeout=None):
+            clicks.append(name)
+            return True
+
+        def fake_wait(sec):
+            if sec == 4.5:
+                self.engine.stop.set()
+
+        frames = [frame_unselected, frame_selected]
+        with patch.object(self.engine, "is_target_focused", return_value=True), \
+             patch.object(self.engine, "frame", side_effect=lambda *a: frames.pop(0) if frames else frame_selected), \
+             patch.object(self.engine, "click", side_effect=fake_click), \
+             patch.object(self.engine, "wait", side_effect=fake_wait):
+            self.engine.method1()
+
+        self.assertEqual(clicks, ["play_again", "play_again"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
