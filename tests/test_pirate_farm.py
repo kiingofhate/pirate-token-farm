@@ -101,8 +101,18 @@ class TestMatcherTemplates(unittest.TestCase):
         cls.matcher = ff.Matcher()
 
     def test_all_five_templates_loaded_and_match_exact_crops(self):
-        self.assertEqual(set(self.matcher.data.keys()), {"play_again", "play_button", "menu_button", "return_lobby", "connecting"})
-        for name in ("play_again", "play_button", "menu_button", "return_lobby", "connecting"):
+        expected = {
+            "play_again",
+            "play_button",
+            "menu_button",
+            "return_lobby",
+            "connecting",
+            "mode_squad_fill",
+            "mode_solo",
+            "esc_gotovo",
+        }
+        self.assertEqual(set(self.matcher.data.keys()), expected)
+        for name in expected:
             tpl = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / f"{name}.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
             canvas = np.full((tpl.shape[0] + 120, tpl.shape[1] + 160), 32, dtype=np.uint8)
             canvas[60:60 + tpl.shape[0], 80:80 + tpl.shape[1]] = tpl
@@ -1222,6 +1232,98 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
             self.engine.method1()
 
         self.assertEqual(clicks, ["play_again", "play_again"])
+
+    def test_lobby_mode_squad_vs_solo_and_modal_switching(self):
+        pb = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "play_button.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        sq = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "mode_squad_fill.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        so = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "mode_solo.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        eg = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "esc_gotovo.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+        self.engine.monitor = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+
+        # 1. Lobby with Squads + Fill ('Отряд, Заполнить') must NOT open modal (tested at both 1080p and 4K!)
+        lobby_squad = np.full((1080, 1920), 40, dtype=np.uint8)
+        bx, by = 1480, 920
+        lobby_squad[by:by + pb.shape[0], bx:bx + pb.shape[1]] = pb
+        lobby_squad[by - 150:by - 150 + sq.shape[0], bx + 35:bx + 35 + sq.shape[1]] = sq
+        lobby_squad_4k = cv2.resize(lobby_squad, (3840, 2160), interpolation=cv2.INTER_CUBIC)
+        with patch.object(self.engine, "is_target_focused", return_value=True), \
+             patch.object(ff, "click_screen_pos") as m_click:
+            changed = self.engine.ensure_squad_fill_in_lobby(lobby_squad)
+            self.assertFalse(changed)
+            changed_4k = self.engine.ensure_squad_fill_in_lobby(lobby_squad_4k)
+            self.assertFalse(changed_4k)
+            m_click.assert_not_called()
+
+        # 2. Lobby with Solo ('Одиночки') -> opens modal, clicks 4-player Squads icon, clicks OFF Fill toggle, clicks ESC ГОТОВО
+        lobby_solo = np.full((1080, 1920), 40, dtype=np.uint8)
+        lobby_solo[by:by + pb.shape[0], bx:bx + pb.shape[1]] = pb
+        lobby_solo[by - 150:by - 150 + so.shape[0], bx + 35:bx + 35 + so.shape[1]] = so
+
+        modal_off = np.full((1080, 1920), 30, dtype=np.uint8)
+        gx, gy = 1556, 912
+        modal_off[gy:gy + eg.shape[0], gx:gx + eg.shape[1]] = eg
+
+        clicked_pts = []
+        with patch.object(self.engine, "is_target_focused", return_value=True), \
+             patch.object(self.engine, "frame", return_value=modal_off), \
+             patch.object(ff, "click_screen_pos", side_effect=lambda x, y: clicked_pts.append((x, y))), \
+             patch.object(ff, "set_cursor_pos"), \
+             patch.object(time, "sleep"):
+            changed2 = self.engine.ensure_squad_fill_in_lobby(lobby_solo)
+            self.assertTrue(changed2)
+            # Expect 4 clicks: (1) mode pill, (2) 4-player Squads icon, (3) Fill toggle (since OFF), (4) ESC ГОТОВО
+            self.assertEqual(len(clicked_pts), 4, f"Expected 4 clicks, got {clicked_pts}")
+
+        # 3. When Fill toggle is already ON (bright yellow > 175), only 3 clicks (skip Fill toggle)
+        modal_on = modal_off.copy()
+        gw_b, gh_b = eg.shape[1], eg.shape[0]
+        fx_rel = int(round(gx + 0.585 * gw_b))
+        fy_rel = int(round(gy - 4.560 * gh_b))
+        modal_on[fy_rel - 18:fy_rel + 18, fx_rel - 30:fx_rel + 30] = 220
+
+        clicked_pts_on = []
+        with patch.object(self.engine, "is_target_focused", return_value=True), \
+             patch.object(self.engine, "frame", return_value=modal_on), \
+             patch.object(ff, "click_screen_pos", side_effect=lambda x, y: clicked_pts_on.append((x, y))), \
+             patch.object(ff, "set_cursor_pos"), \
+             patch.object(time, "sleep"):
+            changed3 = self.engine.ensure_squad_fill_in_lobby(lobby_solo)
+            self.assertTrue(changed3)
+            self.assertEqual(len(clicked_pts_on), 3, f"Expected 3 clicks when Fill already ON, got {clicked_pts_on}")
+
+    def test_method1_periodic_10_to_15_min_lobby_return_and_squad_check(self):
+        pa = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "play_again.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        frame_post = np.full((1080, 1920), 40, dtype=np.uint8)
+        frame_post[880:880 + pa.shape[0], 1350:1350 + pa.shape[1]] = pa
+
+        events = []
+
+        def fake_return_lobby(g=None):
+            events.append("return_to_lobby")
+            return True
+
+        def fake_ensure_squad(g=None, play_box=None):
+            events.append("ensure_squad_fill")
+            return True
+
+        def fake_click(name, label, timeout=None):
+            events.append(f"click:{name}")
+            self.engine.stop.set()
+            return True
+
+        with patch.object(self.engine, "is_target_focused", return_value=True), \
+             patch.object(self.engine, "frame", return_value=frame_post), \
+             patch.object(self.engine, "return_to_lobby_from_match", side_effect=fake_return_lobby), \
+             patch.object(self.engine, "ensure_squad_fill_in_lobby", side_effect=fake_ensure_squad), \
+             patch.object(self.engine, "click", side_effect=fake_click), \
+             patch.object(self.engine, "wait"):
+            # Force periodic check due right on start by returning 0.0 for initial random.uniform
+            with patch.object(ff.random, "uniform", side_effect=[-1.0, 720.0]):
+                self.engine.method1()
+
+        self.assertEqual(events, ["return_to_lobby", "ensure_squad_fill", "click:play_button"])
+        self.assertGreater(self.engine.next_lobby_mode_check, time.monotonic() + 600.0)
 
 
 if __name__ == "__main__":

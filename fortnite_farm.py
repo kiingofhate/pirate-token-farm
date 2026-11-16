@@ -572,6 +572,12 @@ TEXT = {
         "log_retry_esc": "Меню не открылось · повторный Esc",
         "dt_fn_minimized": "Окно Fortnite свёрнуто · автофарм остановлен",
         "log_fn_minimized": "Окно Fortnite свёрнуто или неактивно · автофарм остановлен",
+        "dt_check_mode": "Проверка режима лобби",
+        "dt_fix_squad": "Установка: Отряд и Заполнение",
+        "log_mode_solo_detected": "Обнаружен одиночный режим · переключение в Отряд",
+        "log_mode_squad_ok": "Режим Отряд и Заполнение активен",
+        "log_mode_squad_fixed": "Режим успешно изменен на Отряд и Заполнение",
+        "log_m1_lobby_check": "Периодическая проверка режима в лобби (метод 1)",
     },
     "en": {
         "sub": "Fortnite Farming & Anti-AFK Assistant",
@@ -685,6 +691,12 @@ TEXT = {
         "log_retry_esc": "Menu missed · retrying Esc",
         "dt_fn_minimized": "Fortnite minimized · autofarm stopped",
         "log_fn_minimized": "Fortnite window minimized or unfocused · autofarm stopped",
+        "dt_check_mode": "Checking lobby mode",
+        "dt_fix_squad": "Setting Squads and Fill",
+        "log_mode_solo_detected": "Solo mode detected · switching to Squads",
+        "log_mode_squad_ok": "Squads and Fill mode active",
+        "log_mode_squad_fixed": "Mode successfully switched to Squads and Fill",
+        "log_m1_lobby_check": "Periodic lobby mode check (Method 1)",
     },
 }
 
@@ -692,7 +704,16 @@ TEXT = {
 # ---------------------------------------------------------------------------
 # Template Matcher (Multi-resolution 0.50x..2.15x, inner-core & dual-polarity)
 # ---------------------------------------------------------------------------
-TEMPLATE_NAMES = ("play_again", "play_button", "menu_button", "return_lobby", "connecting")
+TEMPLATE_NAMES = (
+    "play_again",
+    "play_button",
+    "menu_button",
+    "return_lobby",
+    "connecting",
+    "mode_squad_fill",
+    "mode_solo",
+    "esc_gotovo",
+)
 
 # Tight inner-core regions (y0, y1, x0, x1) strictly inside each button containing the text/icon,
 # eliminating background corners and outer borders so any 3D post-match background matches cleanly.
@@ -701,6 +722,7 @@ CORE_BOXES: dict[str, tuple[int, int, int, int]] = {
     "play_button": (24, 73, 60, 285),
     "return_lobby": (20, 58, 165, 425),
     "menu_button": (18, 60, 42, 98),
+    "esc_gotovo": (18, 73, 20, 208),
 }
 
 # Post-match buttons that can appear either selected (yellow fill, dark text) or unselected (dark fill, light text)
@@ -790,6 +812,8 @@ class Matcher:
         name: str,
         threshold: float,
         stop_event: threading.Event | None = None,
+        expected_scale: float | None = None,
+        is_roi: bool = False,
     ) -> tuple[float, tuple[int, int, int, int] | None]:
         variants = self.data.get(name, ())
         if not variants:
@@ -802,7 +826,7 @@ class Matcher:
         has_core = name in self.core_data
 
         # Fast 2-stage coarse-to-fine pyramid search on full-screen frames (720p..4K)
-        if gh >= 360 and gw >= 600:
+        if not is_roi and gh >= 360 and gw >= 600:
             est_h = gh / 1080.0
             est_w = gw / 1920.0
             est_min = min(est_h, est_w)
@@ -899,7 +923,12 @@ class Matcher:
                 return best, box
             return best, None
 
-        for idx, (tpl, mask, w, h) in enumerate(variants):
+        indexed_direct = list(range(len(variants)))
+        if expected_scale is not None:
+            indexed_direct.sort(key=lambda idx: abs(self.scales[idx] - expected_scale))
+
+        for idx in indexed_direct:
+            tpl, mask, w, h = variants[idx]
             if stop_event is not None and stop_event.is_set():
                 return -1.0, None
             if h < gh and w < gw:
@@ -939,18 +968,24 @@ class Matcher:
         name: str,
         threshold: float = 0.84,
         stop_event: threading.Event | None = None,
+        expected_scale: float | None = None,
+        is_roi: bool = False,
     ) -> tuple[float, tuple[int, int, int, int] | None]:
         if gray is None or gray.size == 0:
             return -1.0, None
-        best, box = self._search_single_frame(gray, name, threshold, stop_event)
+        best, box = self._search_single_frame(
+            gray, name, threshold, stop_event, expected_scale=expected_scale, is_roi=is_roi
+        )
         if box is not None:
             return best, box
         # For non-16:9 aspect ratios (e.g. stretched 4:3, 5:4, 16:10, 21:9), un-stretch to 16:9 and map box back
         gh, gw = gray.shape[:2]
-        if gh >= 360 and gw >= 600 and abs((gw / gh) - (16.0 / 9.0)) > 0.03:
+        if not is_roi and gh >= 360 and gw >= 600 and abs((gw / gh) - (16.0 / 9.0)) > 0.03:
             norm_w = int(round(gh * 16.0 / 9.0))
             norm_gray = cv2.resize(gray, (norm_w, gh), interpolation=cv2.INTER_LINEAR)
-            s2, b2 = self._search_single_frame(norm_gray, name, threshold, stop_event)
+            s2, b2 = self._search_single_frame(
+                norm_gray, name, threshold, stop_event, expected_scale=expected_scale, is_roi=is_roi
+            )
             if s2 > best:
                 best = s2
             if b2 is not None:
@@ -963,6 +998,9 @@ class Matcher:
 # ---------------------------------------------------------------------------
 # Automation & Anti-AFK Engine (Thread-safe, synchronized, live-reactive)
 # ---------------------------------------------------------------------------
+_LOCAL_TOKEN_NOTIFIER = None
+
+
 class Engine:
     def __init__(self, app: "App", cap: mss.base.MSSBase) -> None:
         self.app = app
@@ -992,12 +1030,15 @@ class Engine:
         self.next_strafe = now + random.uniform(3.5, 7.5)
         self.lmb_safe_after = 0.0
         self.next_recenter = now
+        self.lobby_check_interval_range = (10.0 * 60.0, 15.0 * 60.0)
+        self.next_lobby_mode_check = now + random.uniform(*self.lobby_check_interval_range)
         self._last_button_click_ts: dict[str, float] = {}
         self._ever_focused = False
         self._last_target_hwnd: int | None = None
         self._monitor_focus_loss = False
         self._focus_loss_logged = False
         self.anti_thread: threading.Thread | None = None
+        self.token_thread: threading.Thread | None = None
         self._busy_lock = threading.Lock()
         self._busy_count = 0
 
@@ -1510,6 +1551,21 @@ class Engine:
                         time.sleep(0.16)
                         continue
                     box = box2
+                    # Before clicking Play in the lobby, ensure Squads + Team Fill is active (if a mode pill is present)
+                    if self.ensure_squad_fill_in_lobby(gray2, play_box=box):
+                        poll_end = time.monotonic() + 2.5
+                        box3 = None
+                        while not self.stop.is_set() and time.monotonic() < poll_end:
+                            time.sleep(0.18)
+                            gray3 = self.frame()
+                            if gray3 is None:
+                                continue
+                            _, box3 = self.matcher.find(gray3, name, stop_event=self.stop)
+                            if box3 is not None:
+                                box = box3
+                                break
+                        if box3 is None:
+                            continue
                 elif name == "play_again":
                     # Release movement keys and let post-match slide-in animation settle before clicking
                     with self.lock:
@@ -1626,9 +1682,9 @@ class Engine:
                         next_vision_check = now + 0.85
                         gray = self.frame(local_cap) if self.is_target_focused() else None
                         if method == 1:
-                            buttons = ["play_again", "play_button"] if use_safe else ["play_again"]
+                            buttons = ["play_again", "return_lobby", "play_button"] if use_safe else ["play_again", "return_lobby"]
                         else:
-                            buttons = ["play_button", "menu_button", "return_lobby"]
+                            buttons = ["play_button", "menu_button", "return_lobby", "esc_gotovo"]
 
                         action_visible = False
                         if gray is not None:
@@ -1821,9 +1877,226 @@ class Engine:
         finally:
             self.release_all()
 
+    def ensure_squad_fill_in_lobby(
+        self,
+        gray: np.ndarray | None = None,
+        play_box: tuple[int, int, int, int] | None = None,
+    ) -> bool:
+        """
+        Inspect the lobby Mode Pill above Play. If Solo ('Одиночки') or non-Squads mode is set,
+        open the Mode Selection Modal, select Squads (4-player icon) + Team Fill ('ЗАПОЛНИТЬ'),
+        and close the modal via 'ESC ГОТОВО'. Returns True if modal was opened and adjusted.
+        """
+        if self.stop.is_set() or not self.check_target_window_active():
+            return False
+        cur_gray = gray if gray is not None else self.frame()
+        if cur_gray is None or cur_gray.size == 0:
+            return False
+        gh, gw = cur_gray.shape[:2]
+
+        if play_box is None:
+            _, play_box = self.matcher.find(cur_gray, "play_button", stop_event=self.stop)
+
+        # Restrict search to the Mode Pill column above play_button when play_box is known
+        search_img = cur_gray
+        rx0, ry0 = 0, 0
+        pill_has_ui = False
+        if play_box is not None:
+            bx, by, bw, bh = play_box
+            rx0 = max(0, bx - bw // 6)
+            ry0 = max(0, int(round(by - 2.45 * bh)))
+            rx1 = min(gw, bx + int(round(bw * 1.18)))
+            ry1 = min(gh, max(ry0 + 1, by - int(round(0.08 * bh))))
+            if (ry1 - ry0) >= 36 and (rx1 - rx0) >= 80:
+                search_img = cur_gray[ry0:ry1, rx0:rx1]
+                # Check if the Mode Pill region directly above Play has actual UI content (not a blank test canvas)
+                pmy0 = max(0, int(round(by - 1.95 * bh)))
+                pmy1 = min(gh, max(pmy0 + 1, int(round(by - 1.08 * bh))))
+                pmx0 = max(0, bx)
+                pmx1 = min(gw, bx + bw)
+                if (pmy1 - pmy0) >= 20 and (pmx1 - pmx0) >= 60:
+                    pill_crop = cur_gray[pmy0:pmy1, pmx0:pmx1]
+                    pill_has_ui = float(pill_crop.std()) > 22.0
+
+        cur_sc = float(cur_gray.shape[0]) / 1080.0
+        is_roi = search_img is not cur_gray
+        sq_score, sq_box = self.matcher.find(
+            search_img, "mode_squad_fill", threshold=0.78, stop_event=self.stop, expected_scale=cur_sc, is_roi=is_roi
+        )
+        so_score, so_box = self.matcher.find(
+            search_img, "mode_solo", threshold=0.76, stop_event=self.stop, expected_scale=cur_sc, is_roi=is_roi
+        )
+
+        # 1. Already in Squads + Team Fill ('Отряд, Заполнить')
+        if sq_box is not None and sq_score >= max(0.78, so_score + 0.05):
+            return False
+
+        # 2. If neither Solo nor a real Mode Pill UI was detected (e.g. minimal synthetic test canvas), do nothing
+        if so_box is None and not pill_has_ui:
+            return False
+
+        # 3. Solo ('Одиночки') or non-Squads mode detected -> open Mode Selection Modal and switch to Squads + Fill
+        self.enter_busy()
+        try:
+            self.app.emit("detail", {"key": "dt_fix_squad"})
+            self.app.emit("log", {"key": "log_mode_solo_detected"})
+
+            if so_box is not None:
+                mx, my, mw, mh = so_box
+                pill_px = self.monitor["left"] + rx0 + mx + mw // 2
+                pill_py = self.monitor["top"] + ry0 + my + mh // 2
+            elif play_box is not None:
+                bx, by, bw, bh = play_box
+                pill_px = self.monitor["left"] + bx + bw // 2
+                pill_py = self.monitor["top"] + max(10, int(round(by - 1.505 * bh)))
+            else:
+                return False
+
+            with self.lock:
+                if not self.check_target_window_active():
+                    return False
+                self.release_all()
+                click_screen_pos(pill_px, pill_py)
+                self.center_cursor()
+
+            # Wait up to 4.5s for Mode Selection Modal ('esc_gotovo') to appear
+            modal_deadline = time.monotonic() + 4.5
+            g_box = None
+            gray_m = None
+            while not self.stop.is_set() and time.monotonic() < modal_deadline:
+                if not self.check_target_window_active():
+                    return False
+                time.sleep(0.22)
+                gray_m = self.frame()
+                if gray_m is None:
+                    continue
+                _, g_box = self.matcher.find(gray_m, "esc_gotovo", threshold=0.75, stop_event=self.stop)
+                if g_box is not None:
+                    break
+
+            if g_box is None:
+                return False
+
+            # Let modal slide-in animation finish and refresh anchor box
+            time.sleep(0.22)
+            gray_m2 = self.frame()
+            if gray_m2 is not None:
+                _, g_box2 = self.matcher.find(gray_m2, "esc_gotovo", threshold=0.75, stop_event=self.stop)
+                if g_box2 is not None:
+                    g_box = g_box2
+                    gray_m = gray_m2
+
+            gx, gy, gw_b, gh_b = g_box
+            # Click 4-player Squads ('ОТРЯД') icon (4th icon in 'Размер команды' row)
+            sq_px = self.monitor["left"] + int(round(gx + 0.860 * gw_b))
+            sq_py = self.monitor["top"] + max(10, int(round(gy - 6.000 * gh_b)))
+            with self.lock:
+                if not self.check_target_window_active():
+                    return False
+                click_screen_pos(sq_px, sq_py)
+                self.center_cursor()
+            time.sleep(0.28)
+
+            # Check Team Fill ('Заполнение команды: ЗАПОЛНИТЬ') toggle switch
+            gray_f = self.frame()
+            if gray_f is None:
+                gray_f = gray_m
+            fx_rel = int(round(gx + 0.585 * gw_b))
+            fy_rel = max(10, int(round(gy - 4.560 * gh_b)))
+            fill_is_on = False
+            if gray_f is not None and gray_f.size > 0:
+                fh_f, fw_f = gray_f.shape[:2]
+                pad_x = max(12, int(round(0.18 * gw_b)))
+                pad_y = max(8, int(round(0.24 * gh_b)))
+                sx0 = max(0, fx_rel - pad_x)
+                sx1 = min(fw_f, fx_rel + pad_x)
+                sy0 = max(0, fy_rel - pad_y)
+                sy1 = min(fh_f, fy_rel + pad_y)
+                sw_crop = gray_f[sy0:sy1, sx0:sx1]
+                if sw_crop.size > 0:
+                    fill_is_on = float((sw_crop > 175).mean()) >= 0.20
+
+            if not fill_is_on:
+                fill_px = self.monitor["left"] + fx_rel
+                fill_py = self.monitor["top"] + fy_rel
+                with self.lock:
+                    if not self.check_target_window_active():
+                        return False
+                    click_screen_pos(fill_px, fill_py)
+                    self.center_cursor()
+                time.sleep(0.25)
+
+            # Confirm and close modal via 'ESC ГОТОВО'
+            done_px = self.monitor["left"] + gx + gw_b // 2
+            done_py = self.monitor["top"] + gy + gh_b // 2
+            with self.lock:
+                if not self.check_target_window_active():
+                    return False
+                click_screen_pos(done_px, done_py)
+                self.center_cursor()
+            time.sleep(0.65)
+            self.app.emit("log", {"key": "log_mode_squad_fixed"})
+            return True
+        finally:
+            self.exit_busy()
+
+    def return_to_lobby_from_match(self, gray: np.ndarray | None = None) -> bool:
+        """
+        Return from post-match screen (or in-match) to main lobby so lobby mode can be verified.
+        Tries direct 'return_lobby' button first, then falls back to Esc -> menu_button -> return_lobby.
+        """
+        self.enter_busy()
+        try:
+            cur_gray = gray if gray is not None else self.frame()
+            direct_lobby = None
+            if cur_gray is not None:
+                _, direct_lobby = self.matcher.find(cur_gray, "return_lobby", stop_event=self.stop)
+            if direct_lobby is not None and self.click("return_lobby", "Return to Lobby", timeout=4.0):
+                self.wait(3.0)
+            else:
+                with self.lock:
+                    self.release_all()
+                    if self.check_target_window_active():
+                        send_key_hw("esc", True)
+                        time.sleep(0.08)
+                        send_key_hw("esc", False)
+                self.wait(0.8)
+                if not self.click("menu_button", "Menu", timeout=18.0):
+                    if self.stop.is_set():
+                        return False
+                    self.app.emit("log", {"key": "log_retry_esc"})
+                    with self.lock:
+                        if self.check_target_window_active():
+                            self.tap_key("esc", hold_s=0.08)
+                    if not self.click("menu_button", "Menu", timeout=15.0):
+                        return False
+                if not self.click("return_lobby", "Return to Lobby", timeout=25.0):
+                    return False
+                self.wait(3.0)
+
+            # Wait up to 35s for lobby ('play_button', 'mode_solo', or 'mode_squad_fill') to appear
+            lobby_deadline = time.monotonic() + 35.0
+            while not self.stop.is_set() and time.monotonic() < lobby_deadline:
+                if not self.check_target_window_active():
+                    if self.stop.is_set():
+                        return False
+                    time.sleep(0.25)
+                    continue
+                g_lob = self.frame()
+                if g_lob is not None:
+                    for bname in ("play_button", "mode_solo", "mode_squad_fill"):
+                        _, bbox = self.matcher.find(g_lob, bname, stop_event=self.stop)
+                        if bbox is not None:
+                            return True
+                time.sleep(0.35)
+            return False
+        finally:
+            self.exit_busy()
+
     def method1(self) -> None:
         self.app.emit("status", "running")
         self.app.emit("detail", {"key": "dt_method1"})
+        self.next_lobby_mode_check = time.monotonic() + random.uniform(*self.lobby_check_interval_range)
         while not self.stop.is_set():
             if not self.check_target_window_active():
                 if self.stop.is_set():
@@ -1835,13 +2108,25 @@ class Engine:
                 time.sleep(0.25)
                 continue
             _, again = self.matcher.find(gray, "play_again")
+            ret_lobby = None
+            if again is None:
+                _, ret_lobby = self.matcher.find(gray, "return_lobby")
             play = None
-            if again is None and self.app.live("safe"):
+            if again is None and ret_lobby is None and self.app.live("safe"):
                 _, play = self.matcher.find(gray, "play_button")
             if again is not None:
                 self.enter_busy()
                 try:
-                    if self.click("play_again", "Play Again", timeout=3.5):
+                    if time.monotonic() >= self.next_lobby_mode_check:
+                        # Periodic 10-15 min check: instead of Play Again, return to lobby, verify Squads+Fill, and launch
+                        self.app.emit("detail", {"key": "dt_check_mode"})
+                        self.app.emit("log", {"key": "log_m1_lobby_check"})
+                        if self.return_to_lobby_from_match(gray):
+                            self.ensure_squad_fill_in_lobby()
+                            if self.click("play_button", "Play", timeout=12.0):
+                                self.wait(7.5)
+                        self.next_lobby_mode_check = time.monotonic() + random.uniform(*self.lobby_check_interval_range)
+                    elif self.click("play_again", "Play Again", timeout=3.5):
                         self.wait(1.6)
                         if not self.stop.is_set() and self.check_target_window_active():
                             gray_recheck = self.frame()
@@ -1852,10 +2137,24 @@ class Engine:
                         self.wait(4.5)
                 finally:
                     self.exit_busy()
+            elif ret_lobby is not None:
+                self.enter_busy()
+                try:
+                    self.app.emit("detail", {"key": "dt_check_mode"})
+                    self.app.emit("log", {"key": "log_m1_lobby_check"})
+                    if self.return_to_lobby_from_match(gray):
+                        self.ensure_squad_fill_in_lobby()
+                        if self.click("play_button", "Play", timeout=12.0):
+                            self.wait(7.5)
+                    self.next_lobby_mode_check = time.monotonic() + random.uniform(*self.lobby_check_interval_range)
+                finally:
+                    self.exit_busy()
             elif play is not None:
                 self.enter_busy()
                 try:
-                    if self.click("play_button", "Play", timeout=3.0):
+                    self.ensure_squad_fill_in_lobby(gray, play_box=play)
+                    if self.click("play_button", "Play", timeout=5.0):
+                        self.next_lobby_mode_check = time.monotonic() + random.uniform(*self.lobby_check_interval_range)
                         self.wait(7.5)
                 finally:
                     self.exit_busy()
@@ -1914,6 +2213,24 @@ class Engine:
                 break
             time.sleep(0.1)
 
+    def _token_watch_loop(self) -> None:
+        """Local-only background watcher that detects Pirate Token drops and sends a Telegram push."""
+        if _LOCAL_TOKEN_NOTIFIER is None or not getattr(_LOCAL_TOKEN_NOTIFIER, "enabled", False):
+            return
+        if os.environ.get("PIRATE_HEADLESS") == "1":
+            return
+        try:
+            with mss.MSS() as t_cap:
+                while not self.stop.is_set():
+                    if self.is_target_focused():
+                        mon = self.current_monitor()
+                        gray = self.frame(t_cap)
+                        if gray is not None:
+                            _LOCAL_TOKEN_NOTIFIER.check_and_notify(gray, app=self.app, cap=t_cap, monitor=mon)
+                    time.sleep(0.75)
+        except Exception:
+            pass
+
     def run(self, method: int) -> None:
         try:
             self.app.emit("status", "starting")
@@ -1932,6 +2249,13 @@ class Engine:
 
             self.anti_thread = threading.Thread(target=self.anti_loop, daemon=True)
             self.anti_thread.start()
+            if (
+                _LOCAL_TOKEN_NOTIFIER is not None
+                and getattr(_LOCAL_TOKEN_NOTIFIER, "enabled", False)
+                and os.environ.get("PIRATE_HEADLESS") != "1"
+            ):
+                self.token_thread = threading.Thread(target=self._token_watch_loop, daemon=True)
+                self.token_thread.start()
 
             if method == 0:
                 self.app.emit("status", "running")
