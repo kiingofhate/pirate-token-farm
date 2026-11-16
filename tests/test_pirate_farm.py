@@ -1255,42 +1255,120 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
             self.assertFalse(changed_4k)
             m_click.assert_not_called()
 
-        # 2. Lobby with Solo ('Одиночки') -> opens modal, clicks 4-player Squads icon, clicks OFF Fill toggle, clicks ESC ГОТОВО
+        # 2. Realistic async modal simulation:
+        #    When Solo opens, Fill is LOCKED/DIM (odin_tail >= 0.11, lbl_white == 0.000).
+        #    Right after Squads icon is clicked, Fortnite takes 1 frame still locked, then unlocks as ОТРЯД + ЗАПОЛНИТЬ (ON)!
+        #    We MUST wait for unlock and NOT toggle ЗАПОЛНИТЬ off, then close cleanly via Esc.
         lobby_solo = np.full((1080, 1920), 40, dtype=np.uint8)
         lobby_solo[by:by + pb.shape[0], bx:bx + pb.shape[1]] = pb
         lobby_solo[by - 150:by - 150 + so.shape[0], bx + 35:bx + 35 + so.shape[1]] = so
 
-        modal_off = np.full((1080, 1920), 30, dtype=np.uint8)
         gx, gy = 1556, 912
-        modal_off[gy:gy + eg.shape[0], gx:gx + eg.shape[1]] = eg
+        gw_b, gh_b = eg.shape[1], eg.shape[0]
+        hx0, hx1 = int(round(gx - 1.120 * gw_b)), int(round(gx - 0.770 * gw_b))
+        hy0, hy1 = int(round(gy - 5.920 * gh_b)), int(round(gy - 5.680 * gh_b))
+        tx0, tx1 = int(round(gx - 1.600 * gw_b)), int(round(gx - 0.370 * gw_b))
+        ty0, ty1 = int(round(gy - 4.460 * gh_b)), int(round(gy - 4.240 * gh_b))
+        ntx0, ntx1 = int(round(gx - 0.835 * gw_b)), int(round(gx - 0.415 * gw_b))
+        fx_rel = int(round(gx + 0.585 * gw_b))
+        fy_rel = int(round(gy - 4.560 * gh_b))
 
-        clicked_pts = []
+        # Construct realistic BGR modal frames for Solo-Locked, Squad-ON (ЗАПОЛНИТЬ), and Squad-OFF (НЕ ЗАПОЛНЯТЬ)
+        modal_base_bgr = np.full((1080, 1920, 3), (95, 18, 45), dtype=np.uint8)  # dark Fortnite modal purple
+        modal_base_bgr[gy:gy + gh_b, gx:gx + gw_b] = cv2.cvtColor(eg, cv2.COLOR_GRAY2BGR)
+
+        modal_solo_locked = modal_base_bgr.copy()
+        modal_solo_locked[hy0:hy1, hx0:hx1] = (230, 230, 230)  # ОДИНОЧКИ tail bright, Fill locked dim (lbl=0)
+
+        modal_squad_on = modal_base_bgr.copy()
+        modal_squad_on[ty0:ty1, tx0:ntx0 - 2] = (235, 235, 235)  # 'ЗАПОЛНИТЬ' text (ne_tail stays dim)
+        modal_squad_on[fy_rel - 16:fy_rel + 16, fx_rel - 26:fx_rel + 12] = (0, 235, 245)  # Yellow HSV Fill ON track
+
+        modal_squad_off = modal_base_bgr.copy()
+        modal_squad_off[ty0:ty1, tx0:ntx1] = (235, 235, 235)  # 'НЕ ЗАПОЛНЯТЬ' extends into ne_tail!
+
+        lobby_squad_bgr = cv2.cvtColor(lobby_squad, cv2.COLOR_GRAY2BGR)
+
+        # Case A: Solo-locked stays locked 1 check after Squads click, then auto-unlocks with Fill ALREADY ON -> must NOT click Fill toggle!
+        state_a = {"phase": "opening", "squad_checks": 0, "clicks": [], "keys": []}
+
+        def fake_frame_a():
+            ph = state_a["phase"]
+            if ph == "opening":
+                return cv2.cvtColor(modal_solo_locked, cv2.COLOR_BGR2GRAY), modal_solo_locked
+            if ph == "wait_squad":
+                state_a["squad_checks"] += 1
+                if state_a["squad_checks"] < 2:
+                    return cv2.cvtColor(modal_solo_locked, cv2.COLOR_BGR2GRAY), modal_solo_locked
+                return cv2.cvtColor(modal_squad_on, cv2.COLOR_BGR2GRAY), modal_squad_on
+            return lobby_squad, lobby_squad_bgr
+
+        def fake_click_a(x, y):
+            state_a["clicks"].append((x, y))
+            if len(state_a["clicks"]) == 2:
+                state_a["phase"] = "wait_squad"
+
+        def fake_tap_a(key, hold_s=0.06):
+            state_a["keys"].append(key)
+            if key == "esc":
+                state_a["phase"] = "closed"
+
         with patch.object(self.engine, "is_target_focused", return_value=True), \
-             patch.object(self.engine, "frame", return_value=modal_off), \
-             patch.object(ff, "click_screen_pos", side_effect=lambda x, y: clicked_pts.append((x, y))), \
+             patch.object(self.engine, "frame_color", side_effect=fake_frame_a), \
+             patch.object(ff, "click_screen_pos", side_effect=fake_click_a), \
+             patch.object(self.engine, "tap_key", side_effect=fake_tap_a), \
              patch.object(ff, "set_cursor_pos"), \
              patch.object(time, "sleep"):
             changed2 = self.engine.ensure_squad_fill_in_lobby(lobby_solo)
             self.assertTrue(changed2)
-            # Expect 4 clicks: (1) mode pill, (2) 4-player Squads icon, (3) Fill toggle (since OFF), (4) ESC ГОТОВО
-            self.assertEqual(len(clicked_pts), 4, f"Expected 4 clicks, got {clicked_pts}")
+            # Only 2 clicks: (1) mode pill, (2) Squads icon! Never toggled ЗАПОЛНИТЬ off, closed cleanly via Esc!
+            self.assertEqual(len(state_a["clicks"]), 2, f"Should not touch Fill when auto-unlocked ON: {state_a['clicks']}")
+            self.assertEqual(state_a["keys"], ["esc"])
 
-        # 3. When Fill toggle is already ON (bright yellow > 175), only 3 clicks (skip Fill toggle)
-        modal_on = modal_off.copy()
-        gw_b, gh_b = eg.shape[1], eg.shape[0]
-        fx_rel = int(round(gx + 0.585 * gw_b))
-        fy_rel = int(round(gy - 4.560 * gh_b))
-        modal_on[fy_rel - 18:fy_rel + 18, fx_rel - 30:fx_rel + 30] = 220
+        # Case B: Squads unlocks as 'НЕ ЗАПОЛНЯТЬ' (OFF) -> must click Fill ONCE, wait for ON, Esc ignored once -> click ESC ГОТОВО fallback!
+        state_b = {"phase": "wait_squad", "fill_checks": 0, "clicks": [], "keys": []}
 
-        clicked_pts_on = []
+        def fake_frame_b():
+            ph = state_b["phase"]
+            if ph == "wait_squad":
+                return cv2.cvtColor(modal_squad_off, cv2.COLOR_BGR2GRAY), modal_squad_off
+            if ph == "wait_fill":
+                state_b["fill_checks"] += 1
+                if state_b["fill_checks"] < 2:
+                    return cv2.cvtColor(modal_squad_off, cv2.COLOR_BGR2GRAY), modal_squad_off
+                return cv2.cvtColor(modal_squad_on, cv2.COLOR_BGR2GRAY), modal_squad_on
+            if ph == "esc_missed":
+                return cv2.cvtColor(modal_squad_on, cv2.COLOR_BGR2GRAY), modal_squad_on
+            return lobby_squad, lobby_squad_bgr
+
+        def fake_click_b(x, y):
+            state_b["clicks"].append((x, y))
+            if len(state_b["clicks"]) == 3:
+                state_b["phase"] = "wait_fill"
+            elif len(state_b["clicks"]) >= 4:
+                state_b["phase"] = "closed"
+
+        def fake_tap_b(key, hold_s=0.06):
+            state_b["keys"].append(key)
+            # Simulate Esc failing once so ESC ГОТОВО fallback click runs
+            if state_b["phase"] == "wait_fill":
+                state_b["phase"] = "esc_missed"
+
+        clock_b = [1000.0]
+        def fake_sleep_b(sec):
+            clock_b[0] += sec
+
         with patch.object(self.engine, "is_target_focused", return_value=True), \
-             patch.object(self.engine, "frame", return_value=modal_on), \
-             patch.object(ff, "click_screen_pos", side_effect=lambda x, y: clicked_pts_on.append((x, y))), \
+             patch.object(self.engine, "frame_color", side_effect=fake_frame_b), \
+             patch.object(ff, "click_screen_pos", side_effect=fake_click_b), \
+             patch.object(self.engine, "tap_key", side_effect=fake_tap_b), \
              patch.object(ff, "set_cursor_pos"), \
-             patch.object(time, "sleep"):
+             patch.object(ff.time, "sleep", side_effect=fake_sleep_b), \
+             patch.object(ff.time, "monotonic", side_effect=lambda: clock_b[0]):
             changed3 = self.engine.ensure_squad_fill_in_lobby(lobby_solo)
             self.assertTrue(changed3)
-            self.assertEqual(len(clicked_pts_on), 3, f"Expected 3 clicks when Fill already ON, got {clicked_pts_on}")
+            # 4 clicks: mode pill, Squads icon, Fill toggle (was OFF), ESC ГОТОВО fallback after Esc miss
+            self.assertEqual(len(state_b["clicks"]), 4, f"Expected 4 clicks with fallback close, got {state_b['clicks']}")
 
     def test_method1_periodic_10_to_15_min_lobby_return_and_squad_check(self):
         pa = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "play_again.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
@@ -1303,10 +1381,6 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
             events.append("return_to_lobby")
             return True
 
-        def fake_ensure_squad(g=None, play_box=None):
-            events.append("ensure_squad_fill")
-            return True
-
         def fake_click(name, label, timeout=None):
             events.append(f"click:{name}")
             self.engine.stop.set()
@@ -1315,14 +1389,13 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
         with patch.object(self.engine, "is_target_focused", return_value=True), \
              patch.object(self.engine, "frame", return_value=frame_post), \
              patch.object(self.engine, "return_to_lobby_from_match", side_effect=fake_return_lobby), \
-             patch.object(self.engine, "ensure_squad_fill_in_lobby", side_effect=fake_ensure_squad), \
              patch.object(self.engine, "click", side_effect=fake_click), \
              patch.object(self.engine, "wait"):
             # Force periodic check due right on start by returning 0.0 for initial random.uniform
             with patch.object(ff.random, "uniform", side_effect=[-1.0, 720.0]):
                 self.engine.method1()
 
-        self.assertEqual(events, ["return_to_lobby", "ensure_squad_fill", "click:play_button"])
+        self.assertEqual(events, ["return_to_lobby", "click:play_button"])
         self.assertGreater(self.engine.next_lobby_mode_check, time.monotonic() + 600.0)
 
 

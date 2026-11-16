@@ -47,9 +47,11 @@
 ### Контроль и безопасность
 
 - Никакого чтения или патчинга памяти Fortnite и инжекта DLL, только `GetForegroundWindow`, `IsIconic`, `mss` и `SendInput`.
-- Как только окно игры теряет фокус или сворачивается, ввод сразу останавливается. По нажатию `F7` (или другой назначенной клавиши) `release_all()` отпускает все зажатые кнопки и клавиши мыши.
+- Как только окно игры теряет фокус или сворачивается, автофарм сразу останавливается и отпускает все клавиши. По нажатию `F7` (или другой назначенной клавиши) `release_all()` сбрасывает зажатые кнопки.
+- Автопроверка режима **Отряд, Заполнить** в лобби и каждые 10-15 минут при работе через «Играть снова».
 - Интерфейс на Canvas не грузит процессор в простое: плавные 60 FPS анимации работают во время переходов и в активном статусе, а отключение анимаций даёт мгновенный отклик.
 - Привязка горячих клавиш (`F6` / `F7` и любых других) использует виртуальные коды клавиш и не зависит от русской или английской раскладки.
+- Подробный список всех улучшений и исправлений смотри в [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -90,8 +92,8 @@ python tests/test_pirate_farm.py
 
 - **3 modes:** `1. Play Again`, `2. Full lobby cycle` (randomized match timer and lobby requeue), `3. Anti-AFK only` (disables screen capture and OpenCV matching).
 - **Varied Anti-AFK:** sprint slides (`W + Shift + Ctrl` into `Space`), `A/D` dodge strafes, crouch peeks with clean `Ctrl` state tracking, pickaxe swings and jump-chops, brief `RMB` ADS glances, idle aim drift, and non-linear camera turns with pitch clamping.
-- **Safety checks:** no memory reading, no DLL injection, and no game file changes. Pauses immediately when Fortnite loses focus or gets minimized, and resets all held keys/mouse buttons on `F7`.
-- **Automated CI builds:** GitHub Actions runs all 34 unit tests (`PIRATE_HEADLESS=1`) and publishes standalone `.exe` and portable `.zip` builds with `SHA256SUMS.txt` on [Releases](https://github.com/kiingofhate/pirate-token-farm/releases/latest).
+- **Safety checks:** no memory reading, no DLL injection, and no game file changes. Stops autofarm immediately when Fortnite loses focus or gets minimized, verifies **Squads + Fill** mode in the lobby, and resets all held keys/mouse buttons on `F7`.
+- **Automated CI builds:** GitHub Actions runs the full unit test suite (`PIRATE_HEADLESS=1`) and publishes standalone `.exe` and portable `.zip` builds with `SHA256SUMS.txt` on [Releases](https://github.com/kiingofhate/pirate-token-farm/releases/latest) (see [CHANGELOG.md](CHANGELOG.md)).
 
 ### Quick Start
 

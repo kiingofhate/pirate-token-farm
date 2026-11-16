@@ -320,11 +320,13 @@ def set_cursor_pos(x: int, y: int) -> None:
 
 def click_screen_pos(x: int, y: int) -> None:
     """Move cursor to exact desktop screen coordinates, wake Unreal Slate hover, and left-click."""
-    set_cursor_pos(int(x), int(y))
+    tx, ty = int(x), int(y)
     if os.environ.get("PIRATE_HEADLESS") != "1":
-        send_mouse_rel(1, 0)
-        send_mouse_rel(-1, 0)
-        set_cursor_pos(int(x), int(y))
+        set_cursor_pos(tx - 6, ty)
+        time.sleep(0.025)
+        send_mouse_rel(6, 0)
+        time.sleep(0.025)
+    set_cursor_pos(tx, ty)
     time.sleep(0.09)
     send_mouse_button(True)
     time.sleep(0.07)
@@ -1134,6 +1136,21 @@ class Engine:
         except Exception:
             return None
 
+    def frame_color(self, cap: mss.base.MSSBase | None = None) -> tuple[np.ndarray, np.ndarray | None] | None:
+        """Capture both grayscale and BGR frame when available, falling back cleanly in mocked tests."""
+        c = cap or self.cap
+        mon = self.current_monitor()
+        try:
+            a = np.array(c.grab(mon))
+            if a.size > 0:
+                return cv2.cvtColor(a, cv2.COLOR_BGRA2GRAY), cv2.cvtColor(a, cv2.COLOR_BGRA2BGR)
+        except Exception:
+            pass
+        gray = self.frame(cap)
+        if gray is None:
+            return None
+        return gray, None
+
     def key_down(self, k: str) -> None:
         if k not in self.held_keys:
             send_key_hw(k, True)
@@ -1877,6 +1894,77 @@ class Engine:
         finally:
             self.release_all()
 
+    @staticmethod
+    def _modal_team_and_fill_state(
+        gray: np.ndarray | None,
+        bgr: np.ndarray | None,
+        gx: int,
+        gy: int,
+        gw_b: int,
+        gh_b: int,
+    ) -> tuple[bool, bool, bool]:
+        """
+        Inspect Team Size & Team Fill inside the open Mode Modal anchored at 'esc_gotovo'.
+        Returns (solo_still_locked, fill_unlocked, fill_is_on).
+        """
+        if gray is None or gray.size == 0:
+            return False, False, False
+        fh, fw = gray.shape[:2]
+
+        # 1. Check bottom line of Team Size ('ОДИНОЧКИ' right tail >= 0.11 vs blank after 'ОТРЯД' <= 0.08)
+        hx0 = max(0, int(round(gx - 1.120 * gw_b)))
+        hx1 = min(fw, max(hx0 + 1, int(round(gx - 0.770 * gw_b))))
+        hy0 = max(0, int(round(gy - 5.920 * gh_b)))
+        hy1 = min(fh, max(hy0 + 1, int(round(gy - 5.680 * gh_b))))
+        odin_tail = float((gray[hy0:hy1, hx0:hx1] > 165).mean())
+
+        # 2. Check bottom line of Team Fill label ('ЗАБЛОКИРОВАНО' is dim 0.000 vs 'ЗАПОЛНИТЬ'/'НЕ ЗАПОЛНЯТЬ' >= 0.17)
+        tx0 = max(0, int(round(gx - 1.600 * gw_b)))
+        tx1 = min(fw, max(tx0 + 1, int(round(gx - 0.370 * gw_b))))
+        ty0 = max(0, int(round(gy - 4.460 * gh_b)))
+        ty1 = min(fh, max(ty0 + 1, int(round(gy - 4.240 * gh_b))))
+        lbl_white = float((gray[ty0:ty1, tx0:tx1] > 165).mean())
+
+        ntx0 = max(0, int(round(gx - 0.835 * gw_b)))
+        ntx1 = min(fw, max(ntx0 + 1, int(round(gx - 0.415 * gw_b))))
+        ne_white = float((gray[ty0:ty1, ntx0:ntx1] > 165).mean())
+
+        solo_still_locked = (odin_tail >= 0.110) and (lbl_white < 0.050)
+        fill_unlocked = lbl_white >= 0.080
+
+        # 3. Check Toggle Switch ON ('ЗАПОЛНИТЬ') vs OFF ('НЕ ЗАПОЛНЯТЬ')
+        fx_rel = int(round(gx + 0.585 * gw_b))
+        fy_rel = max(10, int(round(gy - 4.560 * gh_b)))
+        pad_x = max(12, int(round(0.18 * gw_b)))
+        pad_y = max(8, int(round(0.24 * gh_b)))
+        sx0 = max(0, fx_rel - pad_x)
+        sx1 = min(fw, max(sx0 + 1, fx_rel + pad_x))
+        sy0 = max(0, fy_rel - pad_y)
+        sy1 = min(fh, max(sy0 + 1, fy_rel + pad_y))
+
+        fill_is_on = False
+        if bgr is not None and bgr.shape[:2] == gray.shape[:2]:
+            sw_bgr = bgr[sy0:sy1, sx0:sx1]
+            if sw_bgr.size > 0:
+                hsv = cv2.cvtColor(sw_bgr, cv2.COLOR_BGR2HSV)
+                sat_ratio = float((hsv[:, :, 1] >= 45).mean())
+                if sat_ratio >= 0.15:
+                    yel = float(
+                        ((hsv[:, :, 0] >= 18) & (hsv[:, :, 0] <= 42) & (hsv[:, :, 1] >= 80) & (hsv[:, :, 2] >= 120)).mean()
+                    )
+                    fill_is_on = (yel >= 0.14) and (ne_white < 0.040)
+                    return solo_still_locked, fill_unlocked, fill_is_on
+
+        if fill_unlocked:
+            # Grayscale fallback when real text row is present: 'НЕ ЗАПОЛНЯТЬ' has bright tail >= 0.12
+            fill_is_on = ne_white < 0.040
+        else:
+            sw_crop = gray[sy0:sy1, sx0:sx1]
+            if sw_crop.size > 0:
+                fill_is_on = float((sw_crop > 175).mean()) >= 0.20
+
+        return solo_still_locked, fill_unlocked, fill_is_on
+
     def ensure_squad_fill_in_lobby(
         self,
         gray: np.ndarray | None = None,
@@ -1884,8 +1972,8 @@ class Engine:
     ) -> bool:
         """
         Inspect the lobby Mode Pill above Play. If Solo ('Одиночки') or non-Squads mode is set,
-        open the Mode Selection Modal, select Squads (4-player icon) + Team Fill ('ЗАПОЛНИТЬ'),
-        and close the modal via 'ESC ГОТОВО'. Returns True if modal was opened and adjusted.
+        open the Mode Selection Modal, select Squads (4-player icon), wait for Team Fill to unlock,
+        enable 'ЗАПОЛНИТЬ' only if OFF, and reliably close the modal until 'esc_gotovo' disappears.
         """
         if self.stop.is_set() or not self.check_target_window_active():
             return False
@@ -1909,7 +1997,6 @@ class Engine:
             ry1 = min(gh, max(ry0 + 1, by - int(round(0.08 * bh))))
             if (ry1 - ry0) >= 36 and (rx1 - rx0) >= 80:
                 search_img = cur_gray[ry0:ry1, rx0:rx1]
-                # Check if the Mode Pill region directly above Play has actual UI content (not a blank test canvas)
                 pmy0 = max(0, int(round(by - 1.95 * bh)))
                 pmy1 = min(gh, max(pmy0 + 1, int(round(by - 1.08 * bh))))
                 pmx0 = max(0, bx)
@@ -1963,13 +2050,15 @@ class Engine:
             modal_deadline = time.monotonic() + 4.5
             g_box = None
             gray_m = None
+            bgr_m = None
             while not self.stop.is_set() and time.monotonic() < modal_deadline:
                 if not self.check_target_window_active():
                     return False
                 time.sleep(0.22)
-                gray_m = self.frame()
-                if gray_m is None:
+                fc = self.frame_color()
+                if fc is None:
                     continue
+                gray_m, bgr_m = fc
                 _, g_box = self.matcher.find(gray_m, "esc_gotovo", threshold=0.75, stop_event=self.stop)
                 if g_box is not None:
                     break
@@ -1978,16 +2067,16 @@ class Engine:
                 return False
 
             # Let modal slide-in animation finish and refresh anchor box
-            time.sleep(0.22)
-            gray_m2 = self.frame()
-            if gray_m2 is not None:
-                _, g_box2 = self.matcher.find(gray_m2, "esc_gotovo", threshold=0.75, stop_event=self.stop)
+            time.sleep(0.25)
+            fc2 = self.frame_color()
+            if fc2 is not None:
+                _, g_box2 = self.matcher.find(fc2[0], "esc_gotovo", threshold=0.75, stop_event=self.stop)
                 if g_box2 is not None:
                     g_box = g_box2
-                    gray_m = gray_m2
+                    gray_m, bgr_m = fc2
 
             gx, gy, gw_b, gh_b = g_box
-            # Click 4-player Squads ('ОТРЯД') icon (4th icon in 'Размер команды' row)
+            # Click 4-player Squads ('ОТРЯД') icon and wait up to 2.2s for Team Fill to unlock (never toggle while locked!)
             sq_px = self.monitor["left"] + int(round(gx + 0.860 * gw_b))
             sq_py = self.monitor["top"] + max(10, int(round(gy - 6.000 * gh_b)))
             with self.lock:
@@ -1995,28 +2084,44 @@ class Engine:
                     return False
                 click_screen_pos(sq_px, sq_py)
                 self.center_cursor()
-            time.sleep(0.28)
 
-            # Check Team Fill ('Заполнение команды: ЗАПОЛНИТЬ') toggle switch
-            gray_f = self.frame()
-            if gray_f is None:
-                gray_f = gray_m
-            fx_rel = int(round(gx + 0.585 * gw_b))
-            fy_rel = max(10, int(round(gy - 4.560 * gh_b)))
+            unlock_deadline = time.monotonic() + 2.2
+            retried_squad = False
+            gray_f, bgr_f = gray_m, bgr_m
             fill_is_on = False
-            if gray_f is not None and gray_f.size > 0:
-                fh_f, fw_f = gray_f.shape[:2]
-                pad_x = max(12, int(round(0.18 * gw_b)))
-                pad_y = max(8, int(round(0.24 * gh_b)))
-                sx0 = max(0, fx_rel - pad_x)
-                sx1 = min(fw_f, fx_rel + pad_x)
-                sy0 = max(0, fy_rel - pad_y)
-                sy1 = min(fh_f, fy_rel + pad_y)
-                sw_crop = gray_f[sy0:sy1, sx0:sx1]
-                if sw_crop.size > 0:
-                    fill_is_on = float((sw_crop > 175).mean()) >= 0.20
+            while not self.stop.is_set() and time.monotonic() < unlock_deadline:
+                time.sleep(0.16)
+                if not self.check_target_window_active():
+                    return False
+                fc_u = self.frame_color()
+                if fc_u is None:
+                    continue
+                gray_f, bgr_f = fc_u
+                solo_locked, fill_unlocked, fill_is_on = self._modal_team_and_fill_state(
+                    gray_f, bgr_f, gx, gy, gw_b, gh_b
+                )
+                if not solo_locked and fill_unlocked:
+                    break
+                if not solo_locked and not fill_unlocked:
+                    # Synthetic/non-Russian frame without bright label row: one extra settle wait suffices
+                    break
+                if not retried_squad and (unlock_deadline - time.monotonic()) < 1.1:
+                    retried_squad = True
+                    with self.lock:
+                        if self.check_target_window_active():
+                            click_screen_pos(sq_px, sq_py)
+                            self.center_cursor()
 
+            time.sleep(0.16)
+            fc_post = self.frame_color()
+            if fc_post is not None:
+                gray_f, bgr_f = fc_post
+            _, _, fill_is_on = self._modal_team_and_fill_state(gray_f, bgr_f, gx, gy, gw_b, gh_b)
+
+            # Toggle Team Fill ONLY if it is OFF ('НЕ ЗАПОЛНЯТЬ'), then wait up to 2.0s for 'ЗАПОЛНИТЬ' to confirm
             if not fill_is_on:
+                fx_rel = int(round(gx + 0.585 * gw_b))
+                fy_rel = max(10, int(round(gy - 4.560 * gh_b)))
                 fill_px = self.monitor["left"] + fx_rel
                 fill_py = self.monitor["top"] + fy_rel
                 with self.lock:
@@ -2024,17 +2129,53 @@ class Engine:
                         return False
                     click_screen_pos(fill_px, fill_py)
                     self.center_cursor()
-                time.sleep(0.25)
 
-            # Confirm and close modal via 'ESC ГОТОВО'
+                fill_deadline = time.monotonic() + 2.0
+                while not self.stop.is_set() and time.monotonic() < fill_deadline:
+                    time.sleep(0.16)
+                    if not self.check_target_window_active():
+                        return False
+                    fc_chk = self.frame_color()
+                    if fc_chk is None:
+                        continue
+                    _, _, fill_is_on = self._modal_team_and_fill_state(
+                        fc_chk[0], fc_chk[1], gx, gy, gw_b, gh_b
+                    )
+                    if fill_is_on:
+                        break
+                time.sleep(0.16)
+
+            # Close modal cleanly via Esc / 'ESC ГОТОВО' and VERIFY it actually closed
             done_px = self.monitor["left"] + gx + gw_b // 2
             done_py = self.monitor["top"] + gy + gh_b // 2
-            with self.lock:
-                if not self.check_target_window_active():
+            modal_closed = False
+            for close_try in range(3):
+                if self.stop.is_set() or not self.check_target_window_active():
                     return False
-                click_screen_pos(done_px, done_py)
-                self.center_cursor()
-            time.sleep(0.65)
+                if close_try == 1:
+                    with self.lock:
+                        if self.check_target_window_active():
+                            click_screen_pos(done_px, done_py)
+                            self.center_cursor()
+                else:
+                    with self.lock:
+                        if self.check_target_window_active():
+                            self.tap_key("esc", hold_s=0.09)
+
+                close_deadline = time.monotonic() + 1.4
+                while not self.stop.is_set() and time.monotonic() < close_deadline:
+                    time.sleep(0.20)
+                    fc_c = self.frame_color()
+                    if fc_c is None:
+                        continue
+                    _, still_modal = self.matcher.find(fc_c[0], "esc_gotovo", threshold=0.75, stop_event=self.stop)
+                    if still_modal is None:
+                        modal_closed = True
+                        break
+                if modal_closed:
+                    break
+
+            time.sleep(0.35)
             self.app.emit("log", {"key": "log_mode_squad_fixed"})
             return True
         finally:
@@ -2122,7 +2263,6 @@ class Engine:
                         self.app.emit("detail", {"key": "dt_check_mode"})
                         self.app.emit("log", {"key": "log_m1_lobby_check"})
                         if self.return_to_lobby_from_match(gray):
-                            self.ensure_squad_fill_in_lobby()
                             if self.click("play_button", "Play", timeout=12.0):
                                 self.wait(7.5)
                         self.next_lobby_mode_check = time.monotonic() + random.uniform(*self.lobby_check_interval_range)
@@ -2143,7 +2283,6 @@ class Engine:
                     self.app.emit("detail", {"key": "dt_check_mode"})
                     self.app.emit("log", {"key": "log_m1_lobby_check"})
                     if self.return_to_lobby_from_match(gray):
-                        self.ensure_squad_fill_in_lobby()
                         if self.click("play_button", "Play", timeout=12.0):
                             self.wait(7.5)
                     self.next_lobby_mode_check = time.monotonic() + random.uniform(*self.lobby_check_interval_range)
@@ -2152,7 +2291,6 @@ class Engine:
             elif play is not None:
                 self.enter_busy()
                 try:
-                    self.ensure_squad_fill_in_lobby(gray, play_box=play)
                     if self.click("play_button", "Play", timeout=5.0):
                         self.next_lobby_mode_check = time.monotonic() + random.uniform(*self.lobby_check_interval_range)
                         self.wait(7.5)
