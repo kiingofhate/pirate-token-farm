@@ -110,6 +110,14 @@ class TestMatcherTemplates(unittest.TestCase):
             "mode_squad_fill",
             "mode_solo",
             "esc_gotovo",
+            "play_again_en",
+            "play_button_en",
+            "return_lobby_en",
+            "connecting_en",
+            "mode_squad_fill_en",
+            "mode_fill_en",
+            "mode_solo_en",
+            "esc_done_en",
         }
         self.assertEqual(set(self.matcher.data.keys()), expected)
         for name in expected:
@@ -1397,6 +1405,85 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
 
         self.assertEqual(events, ["return_to_lobby", "click:play_button"])
         self.assertGreater(self.engine.next_lobby_mode_check, time.monotonic() + 600.0)
+
+    def test_english_ui_aliases_no_fill_rejection_and_013921_modal_trace(self):
+        # 1. Logical aliases resolve English Fortnite screens automatically
+        for logical, en_name in (
+            ("play_button", "play_button_en"),
+            ("play_again", "play_again_en"),
+            ("return_lobby", "return_lobby_en"),
+            ("connecting", "connecting_en"),
+            ("mode_solo", "mode_solo_en"),
+            ("esc_gotovo", "esc_done_en"),
+        ):
+            tpl = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / f"{en_name}.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            canvas = np.full((1080, 1920), 40, dtype=np.uint8)
+            canvas[500:500 + tpl.shape[0], 800:800 + tpl.shape[1]] = tpl
+            score, box = self.engine.matcher.find(canvas, logical)
+            self.assertIsNotNone(box, f"Logical '{logical}' failed to resolve EN '{en_name}' (score={score:.3f})")
+
+        # 2. English Lobby: 'Squad + Fill' passes; 'Squad + No Fill' and 'Solo' must NOT pass as Squads+Fill
+        pb_en = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "play_button_en.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        sq_en = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "mode_squad_fill_en.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        fl_en = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "mode_fill_en.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        so_en = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "mode_solo_en.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+        self.engine.monitor = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        bx, by = 1480, 920
+        lobby_en_sq_fill = np.full((1080, 1920), 40, dtype=np.uint8)
+        lobby_en_sq_fill[by:by + pb_en.shape[0], bx:bx + pb_en.shape[1]] = pb_en
+        # Synthetic tan pill matching Zero Build, Squad, Fill layout
+        lobby_en_sq_fill[by - 190:by - 95, bx:bx + pb_en.shape[1]] = 184
+        lobby_en_sq_fill[by - 178:by - 178 + sq_en.shape[0], bx + 200:bx + 200 + sq_en.shape[1]] = sq_en
+        lobby_en_sq_fill[by - 140:by - 140 + fl_en.shape[0], bx + 60:bx + 60 + fl_en.shape[1]] = fl_en
+
+        ok_sq, _, _, _, _, _ = self.engine._lobby_mode_state(lobby_en_sq_fill)
+        self.assertTrue(ok_sq, "English Squad + Fill lobby must be accepted")
+
+        # Insert dark 'No ' strokes inside the leading blank gap before 'Fill'
+        lobby_en_no_fill = lobby_en_sq_fill.copy()
+        fy0 = by - 140
+        fx0 = bx + 60
+        lobby_en_no_fill[fy0 + fl_en.shape[0] // 4:fy0 + (2 * fl_en.shape[0]) // 3, fx0:fx0 + int(0.11 * fl_en.shape[1])] = 20
+        ok_nf, has_pill_nf, _, _, _, _ = self.engine._lobby_mode_state(lobby_en_no_fill)
+        self.assertFalse(ok_nf, "English Squad + No Fill must NOT be accepted as Fill ON")
+        self.assertTrue(has_pill_nf)
+
+        lobby_en_solo = np.full((1080, 1920), 40, dtype=np.uint8)
+        lobby_en_solo[by:by + pb_en.shape[0], bx:bx + pb_en.shape[1]] = pb_en
+        lobby_en_solo[by - 160:by - 160 + so_en.shape[0], bx + 80:bx + 80 + so_en.shape[1]] = so_en
+        ok_so, _, _, so_box_en, _, _ = self.engine._lobby_mode_state(lobby_en_solo)
+        self.assertFalse(ok_so)
+        self.assertIsNotNone(so_box_en)
+
+        # 3. Real 01.39.21 bug trace: even if esc_gotovo matches 0.96x (1560, 912, 220, 87) while Squads settles
+        #    with icon-1 -> icon-4 yellow bars and Fill auto-unlocks ON, Fill toggle must NEVER be clicked off,
+        #    and if Fill flickers OFF during 2-frame check it is caught before closing.
+        eg = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "esc_gotovo.png"), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        eg96 = cv2.resize(eg, (220, 87), interpolation=cv2.INTER_AREA)
+        base_modal = np.full((1080, 1920, 3), (95, 18, 45), dtype=np.uint8)
+        base_modal[910:910 + eg.shape[0], 1555:1555 + eg.shape[1]] = cv2.cvtColor(eg, cv2.COLOR_GRAY2BGR)
+        # Icon 1 yellow underline (Solo selected + Fill locked)
+        locked_f = base_modal.copy()
+        locked_f[402:414, 1478:1538] = (0, 235, 245)
+
+        # Icon 4 yellow underline + white card + yellow Fill ON track (with 0.96x matched box (1560,912,220,87))
+        sq_on_096 = np.full((1080, 1920, 3), (95, 18, 45), dtype=np.uint8)
+        sq_on_096[912:912 + 87, 1560:1560 + 220] = cv2.cvtColor(eg96, cv2.COLOR_GRAY2BGR)
+        sq_on_096[352:404, 1723:1785] = (240, 240, 240)
+        sq_on_096[402:414, 1723:1785] = (0, 235, 245)
+        sq_on_096[475:517, 1648:1730] = (0, 235, 245)
+        sq_on_096[506:524, 1200:1360] = (235, 235, 235)
+
+        sl, sq, fu, fo = self.engine._modal_team_and_fill_state(
+            cv2.cvtColor(locked_f, cv2.COLOR_BGR2GRAY), locked_f, 1555, 910, 229, 91
+        )
+        self.assertEqual((sl, sq, fu, fo), (True, False, False, False))
+
+        sl2, sq2, fu2, fo2 = self.engine._modal_team_and_fill_state(
+            cv2.cvtColor(sq_on_096, cv2.COLOR_BGR2GRAY), sq_on_096, 1560, 912, 220, 87
+        )
+        self.assertEqual((sl2, sq2, fu2, fo2), (False, True, True, True))
 
 
 if __name__ == "__main__":
