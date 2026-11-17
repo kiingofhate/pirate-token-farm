@@ -26,6 +26,7 @@
   - Задержка на удары киркой после клика «Играть» и в главном меню, чтобы исключить случайное нажатие «Отмена».
 
 ### Что исправлено
+- Усилена защита от случайного двойного клика по «Играть» / «Play» и отмены поиска матча: увеличен кулдаун нажатия `play_button` с 6.0 до 10.0 секунд (больше цикла ожидания 7.5 с) и добавлена проверка жёлтого фона кнопки, отсеивающая фиолетовые и серые состояния «Отмена» / `Cancel`.
 - Исправлен сбой якорной привязки кнопки «ESC ГОТОВО» (`0.96x` вместо `1.00x`), из-за которого области проверки текста смещались вниз на 24px, цикл преждевременно выходил при заблокированном «Заполнении команды» и выключал уже активное «ЗАПОЛНИТЬ» в «НЕ ЗАПОЛНЯТЬ».
 - Исправлена ошибка, из-за которой в окне выбора режима переключатель «Заполнить» нажимался до окончания серверного обновления «Одиночки -> Отряд» (когда строка была «ЗАБЛОКИРОВАНО»), что приводило к переключению на «НЕ ЗАПОЛНЯТЬ».
 - Исправлено закрытие модального окна настройки режима: добавлено плавное пробуждение Slate-наведения курсора, нажатие клавиши Esc и резервный клик по «ESC ГОТОВО» / «ESC DONE» с проверкой исчезновения окна.
@@ -45,6 +46,7 @@
 - **Focus & cursor safety:** Auto-stops autofarm immediately when Fortnite is minimized or loses focus, keeps Anti-AFK camera movement strictly horizontal (`dy = 0`) around screen center, and prevents accidental double-clicks on Play/Cancel.
 
 ### Fixed
+- Hardened Play/Cancel protection: raised `play_button` cooldown from 6.0s to 10.0s (exceeding Method 1's 7.5s loop delay) and added yellow-HSV verification so non-yellow `Cancel`/loading states cannot be clicked.
 - Fixed `esc_gotovo` scale tie-break (`0.96x` preempting `1.00x`) and centered modal offsets so async Fill locks no longer trigger early exit or accidental Fill OFF toggles.
 - Fixed modal Fill toggle accidentally flipping `ЗАПОЛНИТЬ` to `НЕ ЗАПОЛНЯТЬ` when Fortnite delayed unlocking Team Fill after clicking Squads.
 - Fixed modal dismissal reliability by waiting for async party updates to settle, closing via `Esc` with `ESC ГОТОВО` / `ESC DONE` fallback click, and verifying modal exit.

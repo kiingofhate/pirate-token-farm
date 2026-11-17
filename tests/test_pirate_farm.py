@@ -1103,10 +1103,20 @@ class TestEngineConcurrencyAndMechanics(unittest.TestCase):
             self.assertEqual(center_calls[-1], (960, 540))
             self.assertGreater(self.engine.lmb_safe_after, time.monotonic() + 5.0)
 
-            # Immediate second click attempt within 6s cooldown must be refused
+            # Immediate second click AND a retry at +8.0s (past Method 1 wait(7.5)) must BOTH be refused within 10s cooldown
             ok2 = self.engine.click("play_button", "Play", timeout=0.01)
             self.assertFalse(ok2)
+            self.engine._last_button_click_ts["play_button"] = time.monotonic() - 8.0
+            ok3 = self.engine.click("play_button", "Play", timeout=0.01)
+            self.assertFalse(ok3)
             self.assertEqual(m_click.call_count, 1)
+
+        # 3. Real color Cancel/Matchmaking purple box must be rejected even if grayscale structure looks similar
+        pb_en_bgr = cv2.imdecode(np.fromfile(str(ff.TEMPLATES / "play_button_en.png"), dtype=np.uint8), cv2.IMREAD_COLOR)
+        purple_cancel_bgr = pb_en_bgr.copy()
+        purple_cancel_bgr[:, :] = (210, 75, 110)
+        self.assertTrue(self.engine._is_yellow_play_box(pb_en_bgr, (0, 0, pb_en_bgr.shape[1], pb_en_bgr.shape[0])))
+        self.assertFalse(self.engine._is_yellow_play_box(purple_cancel_bgr, (0, 0, pb_en_bgr.shape[1], pb_en_bgr.shape[0])))
 
     def test_all_mouse_movements_strictly_horizontal_and_centered(self):
         rel_moves = []

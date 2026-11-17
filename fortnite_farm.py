@@ -873,7 +873,7 @@ class Matcher:
             est_mid = 0.5 * (est_h + est_w)
             indexed.sort(key=lambda item: (0 if item[1] == 1.0 and abs(est_mid - 1.0) <= 0.25 else 1, abs(item[1] - est_mid)))
 
-            c_div = 4 if gw >= 2400 else 2
+            c_div = 4 if gw >= 2400 else (3 if (gw >= 1600 and not has_core) else 2)
             c_gray = cv2.resize(gray, (max(32, gw // c_div), max(32, gh // c_div)), interpolation=cv2.INTER_AREA)
             raw_src = self._raw_cores[name][0] if has_core else self._raw_imgs[name]
             prefix = f"core:{name}" if has_core else f"full:{name}"
@@ -912,10 +912,14 @@ class Matcher:
                 reverse=True,
             )
             pad = max(24, c_div * 10)
-            for _, idx, _sc, cx, cy in coarse_hits[:8]:
+            fine_limit = 4 if name.startswith("connecting") else 8
+            for cscore, idx, _sc, cx, cy in coarse_hits[:fine_limit]:
                 if stop_event is not None and stop_event.is_set():
                     return -1.0, None
                 tpl, mask, w, h = variants[idx]
+                # Masked halo matching is expensive on blank/flat frames; skip pure noise coarse peaks
+                if mask is not None and cscore < 0.22:
+                    continue
                 if has_core:
                     ctpl, cw, ch, ox, oy, fw, fh = self.core_data[name][idx]
                     fx, fy = cx * c_div - ox, cy * c_div - oy
@@ -1103,6 +1107,7 @@ class Engine:
         self.token_thread: threading.Thread | None = None
         self._busy_lock = threading.Lock()
         self._busy_count = 0
+        self._last_frame_pair: tuple[np.ndarray, np.ndarray] | None = None
 
     def enter_busy(self) -> None:
         with self._busy_lock:
@@ -1192,7 +1197,9 @@ class Engine:
             a = np.array(c.grab(mon))
             if a.size == 0:
                 return None
-            return cv2.cvtColor(a, cv2.COLOR_BGRA2GRAY)
+            out = cv2.cvtColor(a, cv2.COLOR_BGRA2GRAY)
+            self._last_frame_pair = (out, cv2.cvtColor(a, cv2.COLOR_BGRA2BGR))
+            return out
         except Exception:
             return None
 
@@ -1590,9 +1597,30 @@ class Engine:
         finally:
             self.rmb_hold_set(False)
 
+    @staticmethod
+    def _is_yellow_play_box(bgr: np.ndarray | None, box: tuple[int, int, int, int]) -> bool:
+        """Return True unless a real saturated color frame clearly shows non-yellow (e.g. Cancel/Loading)."""
+        if bgr is None or bgr.size == 0:
+            return True
+        bx, by, bw, bh = box
+        fh, fw = bgr.shape[:2]
+        x0, y0 = max(0, bx), max(0, by)
+        x1, y1 = min(fw, bx + bw), min(fh, by + bh)
+        if (x1 - x0) < 20 or (y1 - y0) < 12:
+            return True
+        roi = bgr[y0:y1, x0:x1]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        if float((hsv[:, :, 1] >= 45).mean()) < 0.12:
+            return True
+        yel = float(
+            ((hsv[:, :, 0] >= 18) & (hsv[:, :, 0] <= 42)
+             & (hsv[:, :, 1] >= 80) & (hsv[:, :, 2] >= 140)).mean()
+        )
+        return yel >= 0.35
+
     def click(self, name: str, label: str, timeout: float | None = None) -> bool:
         start = time.monotonic()
-        cooldown_s = 6.0 if name == "play_button" else (1.0 if name == "play_again" else 0.0)
+        cooldown_s = 10.0 if name == "play_button" else (1.5 if name == "play_again" else 0.0)
         while not self.stop.is_set():
             if not self.check_target_window_active():
                 if self.stop.is_set() or (timeout is not None and (time.monotonic() - start) >= timeout):
@@ -1610,19 +1638,28 @@ class Engine:
                     return False
                 time.sleep(0.2)
                 continue
+            pair1 = getattr(self, "_last_frame_pair", None)
+            bgr_cur = pair1[1] if (pair1 is not None and pair1[0] is gray) else None
             _, box = self.matcher.find(gray, name, stop_event=self.stop)
             if box is not None:
                 if name == "play_button":
-                    # Move cursor to center first and verify Play did not just switch to Cancel from a manual click
+                    if not self._is_yellow_play_box(bgr_cur, box):
+                        if timeout is not None and (time.monotonic() - start) >= timeout:
+                            return False
+                        time.sleep(0.2)
+                        continue
+                    # Move cursor to center first and verify Play stays yellow and did not turn into Cancel
                     self.center_cursor()
-                    time.sleep(0.30)
+                    time.sleep(0.32)
                     if self.stop.is_set() or not self.check_target_window_active():
                         return False
                     gray2 = self.frame()
                     if gray2 is None:
                         continue
+                    pair2 = getattr(self, "_last_frame_pair", None)
+                    bgr2 = pair2[1] if (pair2 is not None and pair2[0] is gray2) else None
                     _, box2 = self.matcher.find(gray2, name, stop_event=self.stop)
-                    if box2 is None:
+                    if box2 is None or not self._is_yellow_play_box(bgr2, box2):
                         if timeout is not None and (time.monotonic() - start) >= timeout:
                             return False
                         time.sleep(0.16)
@@ -1637,10 +1674,13 @@ class Engine:
                             gray3 = self.frame()
                             if gray3 is None:
                                 continue
+                            pair3 = getattr(self, "_last_frame_pair", None)
+                            bgr3 = pair3[1] if (pair3 is not None and pair3[0] is gray3) else None
                             _, box3 = self.matcher.find(gray3, name, stop_event=self.stop)
-                            if box3 is not None:
+                            if box3 is not None and self._is_yellow_play_box(bgr3, box3):
                                 box = box3
                                 break
+                            box3 = None
                         if box3 is None:
                             continue
                 elif name == "play_again":
